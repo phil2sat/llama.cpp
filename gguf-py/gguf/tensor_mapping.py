@@ -722,6 +722,7 @@ class TensorNameMap:
 
         # Feed-forward up
         MODEL_TENSOR.FFN_UP: (
+            "model.layers.{bid}.block_sparse_moe.w3",                # maxwell-moe (dense layers)
             "model.lilicorr.layers.{bid}.mlp.up_proj",                # lilicorr
             "model.lilicorr.feature_mlp.{bid}.up_proj",               # lilicorr
             "gpt_neox.layers.{bid}.mlp.dense_h_to_4h",                # gptneox
@@ -780,6 +781,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.FFN_UP_SHEXP: (
+            "model.layers.{bid}.block_sparse_moe.shared_expert.w3",  # maxwell-moe
             "layers.{bid}.moe.shared_expert.up",                     # metis16
             "model.layers.{bid}.mlp.shared_expert.up_proj",          # qwen2moe
             "model.layers.{bid}.mlp.shared_experts.up_proj",         # deepseek deepseek2
@@ -803,6 +805,7 @@ class TensorNameMap:
 
         # Feed-forward gate
         MODEL_TENSOR.FFN_GATE: (
+            "model.layers.{bid}.block_sparse_moe.w1",                # maxwell-moe (dense layers)
             "model.layers.{bid}.mlp.gate_proj",               # llama-hf refact olmo2
             "layers.{bid}.mlp.gate_proj",                     # embeddinggemma
             "layers.{bid}.feed_forward.w1",                   # llama-pth
@@ -835,6 +838,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.FFN_GATE_SHEXP: (
+            "model.layers.{bid}.block_sparse_moe.shared_expert.w1",  # maxwell-moe
             "layers.{bid}.moe.shared_expert.gate",                     # metis16
             "model.layers.{bid}.mlp.shared_expert.gate_proj",          # qwen2moe
             "model.layers.{bid}.mlp.shared_experts.gate_proj",         # deepseek deepseek2
@@ -960,6 +964,7 @@ class TensorNameMap:
 
         # Feed-forward down
         MODEL_TENSOR.FFN_DOWN: (
+            "model.layers.{bid}.block_sparse_moe.w2",                # maxwell-moe (dense layers)
             "model.lilicorr.layers.{bid}.mlp.down_proj",              # lilicorr
             "model.lilicorr.feature_mlp.{bid}.down_proj",             # lilicorr
             "gpt_neox.layers.{bid}.mlp.dense_4h_to_h",                # gptneox
@@ -1016,6 +1021,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.FFN_DOWN_SHEXP: (
+            "model.layers.{bid}.block_sparse_moe.shared_expert.w2",  # maxwell-moe
             "model.layers.{bid}.mlp.shared_expert.down_proj",          # qwen2moe
             "model.layers.{bid}.mlp.shared_experts.down_proj",         # deepseek deepseek2
             "model.layers.{bid}.feed_forward.shared_expert.down_proj", # llama4
@@ -1756,6 +1762,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.INDEXER_K_NORM: (
+            "model.layers.{bid}.self_attn.indexer.k_layernorm",   # maxwell-moe
             "model.layers.{bid}.self_attn.indexer.k_norm",  # DSA
             "model.layers.{bid}.self_attn.index_k_norm",    # MSA
         ),
@@ -1781,18 +1788,22 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.INDEXER_Q_PROJ: (
+            "model.layers.{bid}.self_attn.indexer.linear_q_proj", # maxwell-moe
             "model.layers.{bid}.self_attn.index_q_proj", # MSA
         ),
 
         MODEL_TENSOR.INDEXER_K_PROJ: (
+            "model.layers.{bid}.self_attn.indexer.linear_k_proj", # maxwell-moe
             "model.layers.{bid}.self_attn.index_k_proj", # MSA
         ),
 
         MODEL_TENSOR.INDEXER_Q_NORM: (
+            "model.layers.{bid}.self_attn.indexer.q_layernorm",   # maxwell-moe
             "model.layers.{bid}.self_attn.index_q_norm", # MSA
         ),
 
         MODEL_TENSOR.HC_ATTN_FN: (
+            "model.layers.{bid}.self_attn_hyper_connection.mapping_proj", # maxwell-moe
             "model.layers.{bid}.hc_attn_layer.hc_pre.hc_fn", # hy-v4
             "model.layers.{bid}.hc_attn_fn",                 # glm5-next
         ),
@@ -1808,6 +1819,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.HC_FFN_FN: (
+            "model.layers.{bid}.mlp_hyper_connection.mapping_proj",       # maxwell-moe
             "model.layers.{bid}.hc_mlp_layer.hc_pre.hc_fn", # hy-v4
             "model.layers.{bid}.hc_ffn_fn",                 # glm5-next
         ),
