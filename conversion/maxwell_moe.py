@@ -25,6 +25,7 @@ class MaxwellMoeModel(TextModel):
     _original_block_count: int | None = None
     _opt_num_mtp_layers: int = 0
     _mtp_proj_generators: dict[int, dict[str, Callable[[], Tensor]]] = {}
+    _mtp_source_names: dict[int, set[str]] = {}
 
     # Maxwell checkpoints use a dedicated MTP namespace. Keep its accepted
     # tensor inventory explicit so an unsupported checkpoint revision cannot
@@ -54,12 +55,51 @@ class MaxwellMoeModel(TextModel):
         type(self)._original_block_count = int(self.hparams["num_hidden_layers"])
         type(self)._opt_num_mtp_layers = 0
         type(self)._mtp_proj_generators = {}
+        type(self)._mtp_source_names = {}
         tensors = super().index_tensors(remote_hf_model_id=remote_hf_model_id)
         if self.mtp_only:
             if type(self)._opt_num_mtp_layers == 0:
                 raise ValueError("MaxwellMoe: --mtp requested but no mtp_layers tensors were found")
             if type(self)._mtp_proj_generators:
                 raise ValueError("MaxwellMoe: MTP e_proj/h_proj pair is incomplete")
+
+            # Refuse to emit a draft GGUF if any required tensor is absent.
+            # The runtime requires a complete decoder block and the complete
+            # per-layer projection/head set; a partial export is not loadable.
+            decoder_names = {
+                "input_layernorm.weight",
+                "post_attention_layernorm.weight",
+                "self_attn.o_proj.weight",
+                "self_attn.q_proj.weight",
+                "self_attn.k_proj.weight",
+                "self_attn.v_proj.weight",
+                "self_attn.q_layernorm.weight",
+                "self_attn.k_layernorm.weight",
+                *(f"{module}.{name}" for module in ("self_attn_hyper_connection", "mlp_hyper_connection")
+                  for name in ("alpha_pre", "alpha_post", "alpha_res", "bias", "mapping_proj.weight")),
+                "block_sparse_moe.gate.weight",
+                "block_sparse_moe.expert_bias",
+                "block_sparse_moe.shared_expert.w1.weight",
+                "block_sparse_moe.shared_expert.w2.weight",
+                "block_sparse_moe.shared_expert.w3.weight",
+                *(f"block_sparse_moe.experts.{expert}.w{projection}.weight"
+                  for expert in range(int(self.hparams["num_experts"])) for projection in (1, 2, 3)),
+            }
+            root_names = {
+                "e_proj.weight", "h_proj.weight", "enorm.weight", "hnorm.weight",
+                "final_layernorm.weight", "hc_head.hc_head_fn",
+                "hc_head.hc_head_base", "hc_head.hc_head_scale",
+            }
+            for mtp_idx in range(type(self)._opt_num_mtp_layers):
+                expected = decoder_names | root_names
+                actual = type(self)._mtp_source_names.get(mtp_idx, set())
+                missing = sorted(expected - actual)
+                unexpected = sorted(actual - expected)
+                if missing or unexpected:
+                    raise ValueError(
+                        f"MaxwellMoe: incomplete MTP layer {mtp_idx}; "
+                        f"missing={missing}, unexpected={unexpected}"
+                    )
         return tensors
 
     def __init__(self, *args, **kwargs):
@@ -196,6 +236,10 @@ class MaxwellMoeModel(TextModel):
             mtp_idx = int(parts[1])
             bid = cls._original_block_count + mtp_idx
             rest = parts[2]
+            names = cls._mtp_source_names.setdefault(mtp_idx, set())
+            if rest in names:
+                raise ValueError(f"MaxwellMoe: duplicate MTP tensor {name!r}")
+            names.add(rest)
             cls._opt_num_mtp_layers = max(cls._opt_num_mtp_layers, mtp_idx + 1)
 
             if rest.startswith("decoder_layer."):
