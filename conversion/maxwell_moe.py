@@ -194,7 +194,11 @@ class MaxwellMoeModel(TextModel):
                 if not projections:
                     del cls._mtp_proj_generators[bid]
                 name = f"model.layers.{bid}.eh_proj.weight"
-                gen = lambda e_gen=e_gen, h_gen=h_gen: torch.cat((e_gen(), h_gen()), dim=0)
+
+                def gen_mtp_eh_proj() -> Tensor:
+                    return torch.cat((e_gen(), h_gen()), dim=0)
+
+                gen = gen_mtp_eh_proj
             elif rest.startswith("final_layernorm."):
                 name = f"model.norm.{rest[len('final_layernorm.'):]}"
             elif rest.startswith("hc_head."):
