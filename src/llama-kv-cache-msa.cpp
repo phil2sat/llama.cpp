@@ -335,7 +335,7 @@ void llama_kv_cache_msa_context::set_input_pos_slot(
     for (int64_t s = 0; s < n_stream_ub; ++s) {
         const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
 
-        const auto & cells = kv->get_base()->get_cells(seq_id);
+        const auto & cells = kv->get_idx()->get_cells(seq_id);
 
         std::vector<int32_t> map(n_pos, 0);
 
@@ -358,7 +358,7 @@ void llama_kv_cache_msa_context::set_input_pos_slot(
             for (int64_t t = 0; t < n_tps; ++t) {
                 const llama_pos pos = ubatch->pos[s*n_tps + t];
                 if (token_slots[t] >= 0 && pos >= 0 && pos < n_pos) {
-                    map[pos] = (int32_t) (token_slots[t] % kv->get_base()->get_size());
+                    map[pos] = (int32_t) (token_slots[t] % kv->get_idx()->get_size());
                 }
             }
         }
@@ -394,7 +394,7 @@ void llama_kv_cache_msa_context::set_input_pos_valid_mask(
 
     for (int64_t s = 0; s < n_stream; ++s) {
         const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
-        const auto & cells = kv->get_base()->get_cells(seq_id);
+        const auto & cells = kv->get_idx()->get_cells(seq_id);
         float * row = data + s*dst->nb[1]/sizeof(float);
         std::fill(row, row + n_pos, -INFINITY);
 
