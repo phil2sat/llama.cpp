@@ -11378,6 +11378,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_top_k_mask(type, 512, 8, 16, 32, 7, true, 5, 1, 4, false, true));
     }
 
+    // GQA mask broadcasting and grouped Flash Attention reference equivalence.
+    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 1, true));
+    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 2, true));
+    test_cases.emplace_back(new test_flash_attn_gqa_grouped());
+
     // glu ops
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}) {
         for (int v : {0, 1}) {
@@ -15047,13 +15052,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, n_kv, 0, 0, 2048, 0, false, nb, 1, 1, true));
         }
     }
-
-    // GQA-style head broadcasting: one base mask is shared by four independently selected head groups.
-    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 1, true));
-    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 2, true));
-
-    // Grouped Flash Attention must match a per-query-head dense GQA reference.
-    test_cases.emplace_back(new test_flash_attn_gqa_grouped());
 
     // launch-overhead isolation: single L2_NORM launch vs batched siblings at the GDN
     // production shape (strided qkv views) -- perf-mode only, the eval list has its own
