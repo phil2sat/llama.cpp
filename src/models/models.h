@@ -2309,9 +2309,12 @@ struct llama_model_maxwell_moe : public llama_model_base {
     llama_model_maxwell_moe(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
+    uint32_t graph_nodes_per_tensor() const override { return 32; }
 
     struct graph : public llm_graph_context {
+        struct no_build {};
         graph(const llm_graph_params & params);
+        graph(const llm_graph_params & params, no_build);
 
         // mHC (manifold-constrained hyper-connections), as in DeepSeek-V4
         struct hc_pre {
@@ -2349,6 +2352,10 @@ struct llama_model_maxwell_moe : public llama_model_base {
                 ggml_tensor * hc_fn,
                 ggml_tensor * hc_scale,
                 ggml_tensor * hc_base) const;
+    };
+
+    struct graph_mtp : public graph {
+        graph_mtp(const llm_graph_params & params);
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

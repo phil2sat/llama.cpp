@@ -31,6 +31,11 @@ void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
     if (hparams.dsv4_hc_mult != 4) {
         throw std::runtime_error("maxwell-moe: only 4 hyper-connection streams are supported");
     }
+    hparams.n_embd_nextn_impl = hparams.n_embd * hparams.dsv4_hc_mult;
+
+    if (hparams.n_layer_nextn > 1) {
+        throw std::runtime_error("maxwell-moe: only one MTP decoder layer is currently supported");
+    }
 
     // Maxwell backbone attention requires the learned block-sparse indexer.
     ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,    hparams.indexer_n_head);
@@ -63,8 +68,16 @@ void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
     }
 }
 
-void llama_model_maxwell_moe::load_arch_tensors(llama_model_loader &) {
+void llama_model_maxwell_moe::load_arch_tensors(llama_model_loader & ml) {
     LLAMA_LOAD_LOCALS;
+
+    const auto flags = nextn_flags(ml);
+    const int trunk_flags = flags.trunk;
+    const int mtp_flags   = flags.mtp;
+
+    if (n_layer_nextn > 1) {
+        throw std::runtime_error("maxwell-moe: only one MTP decoder layer is currently supported");
+    }
 
     const int64_t n_ff_exp   = hparams.n_ff_exp();
     const int64_t n_ff_shexp = hparams.n_ff_shexp;
@@ -79,60 +92,91 @@ void llama_model_maxwell_moe::load_arch_tensors(llama_model_loader &) {
     }
 
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
-
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
-    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, 0);
+    output      = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, 0);
 
-    hc_head_fn    = create_tensor(tn(LLM_TENSOR_HC_HEAD_FN,    "weight"), {hc_dim, hc}, 0);
-    hc_head_base  = create_tensor(tn(LLM_TENSOR_HC_HEAD_BASE,  "weight"), {hc}, 0);
+    hc_head_fn    = create_tensor(tn(LLM_TENSOR_HC_HEAD_FN, "weight"), {hc_dim, hc}, 0);
+    hc_head_base  = create_tensor(tn(LLM_TENSOR_HC_HEAD_BASE, "weight"), {hc}, 0);
     hc_head_scale = create_tensor(tn(LLM_TENSOR_HC_HEAD_SCALE, "weight"), {1}, 0);
 
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
 
-        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
+        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, trunk_flags);
+        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head, n_embd_gqa, n_embd_gqa, trunk_flags);
+        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, trunk_flags);
 
-        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head, n_embd_gqa, n_embd_gqa, 0);
-        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
+        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, trunk_flags);
+        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd_head_k}, trunk_flags);
 
-        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, 0);
-        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd_head_k}, 0);
+        // The learned indexer is part of Maxwell's backbone attention, not the dense MTP attention.
+        layer.index_q_proj = create_tensor(tn(LLM_TENSOR_INDEXER_Q_PROJ, "weight", i), {n_embd, n_idx_head * n_idx_dim}, trunk_flags);
+        layer.index_k_proj = create_tensor(tn(LLM_TENSOR_INDEXER_K_PROJ, "weight", i), {n_embd, n_idx_dim}, trunk_flags);
+        layer.index_q_norm = create_tensor(tn(LLM_TENSOR_INDEXER_Q_NORM, "weight", i), {n_idx_dim}, trunk_flags);
+        layer.index_k_norm = create_tensor(tn(LLM_TENSOR_INDEXER_K_NORM, "weight", i), {n_idx_dim}, trunk_flags);
 
-        // The learned indexer is part of Maxwell's attention definition, not optional metadata.
-        layer.index_q_proj = create_tensor(tn(LLM_TENSOR_INDEXER_Q_PROJ, "weight", i), {n_embd, n_idx_head * n_idx_dim}, 0);
-        layer.index_k_proj = create_tensor(tn(LLM_TENSOR_INDEXER_K_PROJ, "weight", i), {n_embd, n_idx_dim}, 0);
-        layer.index_q_norm = create_tensor(tn(LLM_TENSOR_INDEXER_Q_NORM, "weight", i), {n_idx_dim}, 0);
-        layer.index_k_norm = create_tensor(tn(LLM_TENSOR_INDEXER_K_NORM, "weight", i), {n_idx_dim}, 0);
+        layer.hc_attn_fn    = create_tensor(tn(LLM_TENSOR_HC_ATTN_FN, "weight", i), {hc_dim, hc_mix_dim}, trunk_flags);
+        layer.hc_attn_base  = create_tensor(tn(LLM_TENSOR_HC_ATTN_BASE, "weight", i), {hc_mix_dim}, trunk_flags);
+        layer.hc_attn_scale = create_tensor(tn(LLM_TENSOR_HC_ATTN_SCALE, "weight", i), {3}, trunk_flags);
+        layer.hc_ffn_fn     = create_tensor(tn(LLM_TENSOR_HC_FFN_FN, "weight", i), {hc_dim, hc_mix_dim}, trunk_flags);
+        layer.hc_ffn_base   = create_tensor(tn(LLM_TENSOR_HC_FFN_BASE, "weight", i), {hc_mix_dim}, trunk_flags);
+        layer.hc_ffn_scale  = create_tensor(tn(LLM_TENSOR_HC_FFN_SCALE, "weight", i), {3}, trunk_flags);
 
-        layer.hc_attn_fn    = create_tensor(tn(LLM_TENSOR_HC_ATTN_FN,    "weight", i), {hc_dim, hc_mix_dim}, 0);
-        layer.hc_attn_base  = create_tensor(tn(LLM_TENSOR_HC_ATTN_BASE,  "weight", i), {hc_mix_dim}, 0);
-        layer.hc_attn_scale = create_tensor(tn(LLM_TENSOR_HC_ATTN_SCALE, "weight", i), {3}, 0);
-        layer.hc_ffn_fn     = create_tensor(tn(LLM_TENSOR_HC_FFN_FN,     "weight", i), {hc_dim, hc_mix_dim}, 0);
-        layer.hc_ffn_base   = create_tensor(tn(LLM_TENSOR_HC_FFN_BASE,   "weight", i), {hc_mix_dim}, 0);
-        layer.hc_ffn_scale  = create_tensor(tn(LLM_TENSOR_HC_FFN_SCALE,  "weight", i), {3}, 0);
-
-        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
+        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, trunk_flags);
 
         if (i < (int) hparams.n_layer_dense_lead) {
-            layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
-            layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
-            layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+            layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd, n_ff}, trunk_flags);
+            layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {n_ff, n_embd}, trunk_flags);
+            layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight", i), {n_embd, n_ff}, trunk_flags);
         } else {
-            layer.ffn_gate_inp    = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,    "weight", i), {n_embd, n_expert}, 0);
-            layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias",   i), {n_expert}, 0);
-
-            layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {  n_embd, n_ff_exp, n_expert}, 0);
-            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, 0);
-            layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {  n_embd, n_ff_exp, n_expert}, 0);
-
-            layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {    n_embd, n_ff_shexp}, 0);
-            layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {n_ff_shexp,     n_embd}, 0);
-            layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,   "weight", i), {    n_embd, n_ff_shexp}, 0);
+            layer.ffn_gate_inp    = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert}, trunk_flags);
+            layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias", i), {n_expert}, trunk_flags);
+            layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, trunk_flags);
+            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp, n_embd, n_expert}, trunk_flags);
+            layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, trunk_flags);
+            layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {n_embd, n_ff_shexp}, trunk_flags);
+            layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {n_ff_shexp, n_embd}, trunk_flags);
+            layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP, "weight", i), {n_embd, n_ff_shexp}, trunk_flags);
         }
     }
-}
 
+    for (int i = n_layer; i < n_layer_all; ++i) {
+        auto & layer = layers[i];
+
+        // Maxwell MTP uses dense GQA and has no MSA indexer tensors.
+        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, mtp_flags);
+        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head, n_embd_gqa, n_embd_gqa, mtp_flags);
+        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, mtp_flags);
+        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, mtp_flags);
+        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd_head_k}, mtp_flags);
+
+        layer.hc_attn_fn    = create_tensor(tn(LLM_TENSOR_HC_ATTN_FN, "weight", i), {hc_dim, hc_mix_dim}, mtp_flags);
+        layer.hc_attn_base  = create_tensor(tn(LLM_TENSOR_HC_ATTN_BASE, "weight", i), {hc_mix_dim}, mtp_flags);
+        layer.hc_attn_scale = create_tensor(tn(LLM_TENSOR_HC_ATTN_SCALE, "weight", i), {3}, mtp_flags);
+        layer.hc_ffn_fn     = create_tensor(tn(LLM_TENSOR_HC_FFN_FN, "weight", i), {hc_dim, hc_mix_dim}, mtp_flags);
+        layer.hc_ffn_base   = create_tensor(tn(LLM_TENSOR_HC_FFN_BASE, "weight", i), {hc_mix_dim}, mtp_flags);
+        layer.hc_ffn_scale  = create_tensor(tn(LLM_TENSOR_HC_FFN_SCALE, "weight", i), {3}, mtp_flags);
+
+        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, mtp_flags);
+        layer.ffn_gate_inp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert}, mtp_flags);
+        layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias", i), {n_expert}, mtp_flags);
+        layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, mtp_flags);
+        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp, n_embd, n_expert}, mtp_flags);
+        layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, mtp_flags);
+        layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {n_embd, n_ff_shexp}, mtp_flags);
+        layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {n_ff_shexp, n_embd}, mtp_flags);
+        layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP, "weight", i), {n_embd, n_ff_shexp}, mtp_flags);
+
+        // e_proj and h_proj are concatenated along their output rows by the converter.
+        layer.nextn.eh_proj = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", i), {n_embd, 2*n_embd}, mtp_flags);
+        layer.nextn.enorm   = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM, "weight", i), {n_embd}, mtp_flags);
+        layer.nextn.hnorm   = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM, "weight", i), {n_embd}, mtp_flags);
+    }
+}
 std::unique_ptr<llm_graph_context> llama_model_maxwell_moe::build_arch_graph(const llm_graph_params & params) const {
+    if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
+        return std::make_unique<graph_mtp>(params);
+    }
     return std::make_unique<graph>(params);
 }
 
@@ -315,6 +359,11 @@ ggml_tensor * llama_model_maxwell_moe::graph::build_hc_head(
     cb(pre, "hc_head_pre", -1);
 
     return build_hc_collapse(x, pre, -1);
+}
+
+llama_model_maxwell_moe::graph::graph(
+        const llm_graph_params & params,
+        llama_model_maxwell_moe::graph::no_build) : llm_graph_context(params) {
 }
 
 llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_graph_context(params) {
@@ -630,6 +679,10 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
         inpL = ggml_reshape_3d(ctx0, flat, n_embd, hc, n_outputs);
     }
 
+    // Preserve the four residual streams for the Maxwell MTP draft head.
+    res->t_h_nextn = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_outputs);
+    cb(res->t_h_nextn, "h_nextn", -1);
+
     cur = build_hc_head(inpL, model.hc_head_fn, model.hc_head_scale, model.hc_head_base);
     cb(cur, "hc_head", -1);
 
@@ -642,4 +695,130 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
     res->t_logits = cur;
 
     ggml_build_forward_expand(gf, cur);
+}
+
+
+llama_model_maxwell_moe::graph_mtp::graph_mtp(const llm_graph_params & params)
+    : graph(params, llama_model_maxwell_moe::graph::no_build{}) {
+    GGML_ASSERT(hparams.n_layer_nextn == 1 && "MAXWELL MTP currently supports exactly one draft decoder layer");
+
+    const int64_t hc = hparams.dsv4_hc_mult;
+    const int64_t hc_dim = hc * n_embd;
+    const int il = hparams.n_layer();
+    const auto & layer = model.layers[il];
+
+    GGML_ASSERT(layer.nextn.eh_proj && "MAXWELL MTP: missing nextn.eh_proj");
+    GGML_ASSERT(layer.nextn.enorm && "MAXWELL MTP: missing nextn.enorm");
+    GGML_ASSERT(layer.nextn.hnorm && "MAXWELL MTP: missing nextn.hnorm");
+    GGML_ASSERT(layer.ffn_gate_inp && "MAXWELL MTP: missing MTP router weights");
+    GGML_ASSERT(layer.ffn_exp_probs_b && "MAXWELL MTP: missing MTP expert selection bias");
+
+    auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd_inp(), hparams.n_embd_nextn());
+    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_set_input(inp->tokens);
+    inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd_inp(), n_tokens);
+    ggml_set_input(inp->embd);
+
+    ggml_tensor * tok_embd;
+    ASSERT_EMBD_OR_TOKEN(ubatch);
+    if (ubatch.token) {
+        tok_embd = ggml_get_rows(ctx0, model.tok_embd, inp->tokens);
+    } else {
+        tok_embd = inp->embd;
+    }
+    cb(tok_embd, "mtp_tok_embd", il);
+
+    inp->h = build_inp_embd_state(inp.get(), hparams.n_embd_nextn());
+    ggml_tensor * h_embd = inp->h;
+    res->add_input(std::move(inp));
+
+    ggml_tensor * inp_pos = build_inp_pos();
+    ggml_tensor * inp_out_ids = build_inp_out_ids();
+    auto * inp_attn = build_attn_inp_kv();
+
+    // Normalize each of the four residual streams independently.
+    ggml_tensor * h_streams = ggml_reshape_3d(ctx0, h_embd, n_embd, hc, n_tokens);
+    ggml_tensor * h_norm = build_norm(h_streams, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
+    ggml_tensor * e_norm = build_norm(tok_embd, layer.nextn.enorm, nullptr, LLM_NORM_RMS, il);
+    cb(h_norm, "mtp_hnorm", il);
+    cb(e_norm, "mtp_enorm", il);
+
+    ggml_tensor * eh_proj = layer.nextn.eh_proj;
+    GGML_ASSERT(eh_proj->ne[0] == n_embd && eh_proj->ne[1] == 2*n_embd);
+    ggml_tensor * e_proj = ggml_view_2d(ctx0, eh_proj, n_embd, n_embd, eh_proj->nb[1], 0);
+    ggml_tensor * h_proj = ggml_view_2d(ctx0, eh_proj, n_embd, n_embd, eh_proj->nb[1], n_embd*eh_proj->nb[1]);
+
+    ggml_tensor * e_projected = build_lora_mm(e_proj, e_norm);
+    e_projected = ggml_reshape_3d(ctx0, e_projected, n_embd, 1, n_tokens);
+    ggml_tensor * h_projected = build_lora_mm(h_proj, h_norm);
+    ggml_tensor * cur = ggml_add(ctx0, ggml_repeat(ctx0, e_projected, h_projected), h_projected);
+    cb(cur, "mtp_input_projection", il);
+
+    // Maxwell's MTP decoder uses dense GQA rather than the backbone's block-sparse indexer.
+    ggml_tensor * residual = cur;
+    const hc_pre attn_hc = build_hc_pre(cur, layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, il);
+    cur = build_norm(attn_hc.cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
+
+    const int64_t n_embd_head = hparams.n_embd_head_v();
+    auto [Qcur, Kcur, Vcur] = build_qkv(layer, cur, n_embd_head, n_head, n_head_kv, il);
+    Qcur = build_norm(Qcur, layer.attn_q_norm, nullptr, LLM_NORM_RMS, il);
+    Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
+    Qcur = build_rope(Qcur, inp_pos, il);
+    Kcur = build_rope(Kcur, inp_pos, il);
+
+    const float kq_scale = hparams.f_attention_scale == 0.0f
+            ? 1.0f / sqrtf(float(n_embd_head))
+            : hparams.f_attention_scale;
+    cur = build_attn(inp_attn,
+            nullptr, nullptr, nullptr,
+            Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+    cur = build_lora_mm(layer.wo, cur, layer.wo_s);
+    if (layer.wo_b) {
+        cur = ggml_add(ctx0, cur, layer.wo_b);
+    }
+    cur = build_hc_post(cur, residual, attn_hc.post, attn_hc.comb, il);
+    cb(cur, "mtp_attn_residual", il);
+
+    residual = cur;
+    const hc_pre ffn_hc = build_hc_pre(cur, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, il);
+    cur = build_norm(ffn_hc.cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
+
+    ggml_tensor * moe_out = build_moe_ffn(cur,
+            layer.ffn_gate_inp,
+            layer.ffn_up_exps,
+            layer.ffn_gate_exps,
+            layer.ffn_down_exps,
+            layer.ffn_exp_probs_b,
+            n_expert, n_expert_used,
+            LLM_FFN_SILU, hparams.expert_weights_norm,
+            hparams.expert_weights_scale,
+            (llama_expert_gating_func_type) hparams.expert_gating_func,
+            il,
+            nullptr, nullptr, nullptr, nullptr, 0.0f);
+
+    ggml_tensor * ffn_shexp = build_ffn(cur,
+            layer.ffn_up_shexp, nullptr, nullptr,
+            layer.ffn_gate_shexp, nullptr, nullptr,
+            layer.ffn_down_shexp, nullptr, nullptr,
+            nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
+    cur = ggml_add(ctx0, moe_out, ffn_shexp);
+    cur = build_hc_post(cur, residual, ffn_hc.post, ffn_hc.comb, il);
+    cur = build_cvec(cur, il);
+    cb(cur, "mtp_decoder_out", il);
+
+    // Keep the multistream state for the next speculative token.
+    ggml_tensor * h_nextn = ggml_reshape_2d(ctx0, cur, hc_dim, n_tokens);
+    if (inp_out_ids) {
+        h_nextn = ggml_get_rows(ctx0, h_nextn, inp_out_ids);
+    }
+    res->t_h_nextn = h_nextn;
+
+    ggml_tensor * head_inp = ggml_reshape_3d(ctx0, h_nextn, n_embd, hc, n_outputs);
+    ggml_tensor * head = build_hc_head(head_inp, model.hc_head_fn, model.hc_head_scale, model.hc_head_base);
+    head = build_norm(head, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+    res->t_embd = head;
+
+    ggml_tensor * logits = build_lora_mm(model.output, head);
+    res->t_logits = logits;
+    ggml_build_forward_expand(gf, logits);
 }

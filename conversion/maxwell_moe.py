@@ -18,9 +18,36 @@ class MaxwellMoeModel(TextModel):
     _experts: list[dict[str, Tensor]] | None = None
     _hc_scale: dict[str, dict[str, Tensor]] | None = None
 
+    supports_mtp_export = True
+    mtp_only: bool = False
+    no_mtp: bool = False
+    _original_block_count: int | None = None
+    _opt_num_mtp_layers: int = 0
+    _mtp_proj_generators: dict[int, dict[str, Callable[[], Tensor]]] = {}
+
+    def index_tensors(self, remote_hf_model_id: str | None = None):
+        if self.mtp_only and self.no_mtp:
+            raise ValueError("MaxwellMoe: --mtp and --no-mtp cannot be combined")
+        type(self)._original_block_count = int(self.hparams["num_hidden_layers"])
+        type(self)._opt_num_mtp_layers = 0
+        type(self)._mtp_proj_generators = {}
+        tensors = super().index_tensors(remote_hf_model_id=remote_hf_model_id)
+        if self.mtp_only:
+            if type(self)._opt_num_mtp_layers == 0:
+                raise ValueError("MaxwellMoe: --mtp requested but no mtp_layers tensors were found")
+            if type(self)._mtp_proj_generators:
+                raise ValueError("MaxwellMoe: MTP e_proj/h_proj pair is incomplete")
+        return tensors
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         hparams = self.hparams
+        if self.mtp_only:
+            n_mtp = int(hparams.get("mtp_num_layers", type(self)._opt_num_mtp_layers))
+            if n_mtp != type(self)._opt_num_mtp_layers:
+                raise ValueError(f"MaxwellMoe: config declares {n_mtp} MTP layers but checkpoint contains {type(self)._opt_num_mtp_layers}")
+            self.block_count = int(hparams["num_hidden_layers"]) + n_mtp
+            self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
 
         if (act := hparams.get("hidden_act", "silu")) != "silu":
             raise ValueError(f"MaxwellMoe: unsupported hidden_act {act!r}")
@@ -117,15 +144,71 @@ class MaxwellMoeModel(TextModel):
         self.gguf_writer.add_indexer_local_blocks(hparams["block_sparse_gqa_local_window_size"] // block)
         self.gguf_writer.add_indexer_prefix_blocks(hparams["block_sparse_gqa_prefix_window_size"] // block)
 
-        if hparams.get("mtp_num_layers", 0):
-            logger.warning("MaxwellMoe: dropping %d MTP layer(s), they only run for speculative decoding",
+        if self.mtp_only:
+            self.gguf_writer.add_nextn_predict_layers(self.block_count - int(hparams["num_hidden_layers"]))
+        elif not self.no_mtp and hparams.get("mtp_num_layers", 0):
+            logger.warning("MaxwellMoe: dropping %d MTP layer(s); use --mtp to export a separate speculative draft",
                            hparams["mtp_num_layers"])
 
     @classmethod
     def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:
-        if item[0].startswith("mtp_layers."):
+        titem = TextModel.filter_tensors(item)
+        if titem is None:
             return None
-        return super().filter_tensors(item)
+
+        name, gen = titem
+        if name.startswith("model.mtp_layers."):
+            name = name[len("model.") :]
+
+        if name.startswith("mtp_layers."):
+            if cls.no_mtp or not cls.mtp_only:
+                return None
+            if cls._original_block_count is None:
+                raise ValueError("MaxwellMoe: MTP layer count was not initialized")
+
+            parts = name.split(".", 3)
+            if len(parts) < 3 or not parts[1].isdecimal():
+                raise ValueError(f"MaxwellMoe: unsupported MTP tensor name {name!r}")
+
+            mtp_idx = int(parts[1])
+            bid = cls._original_block_count + mtp_idx
+            rest = parts[2] + (f".{parts[3]}" if len(parts) == 4 else "")
+            cls._opt_num_mtp_layers = max(cls._opt_num_mtp_layers, mtp_idx + 1)
+
+            if rest.startswith("decoder_layer."):
+                name = f"model.layers.{bid}.{rest[len('decoder_layer.'):]}"
+            elif rest.startswith(("enorm.", "hnorm.")):
+                name = f"model.layers.{bid}.{rest}"
+            elif rest.startswith(("e_proj.", "h_proj.")):
+                projection = rest.split(".", 1)[0]
+                projections = cls._mtp_proj_generators.setdefault(bid, {})
+                if projection in projections:
+                    raise ValueError(f"MaxwellMoe: duplicate MTP projection {projection!r} for layer {mtp_idx}")
+                projections[projection] = gen
+                if len(projections) < 2:
+                    return None
+                if set(projections) != {"e_proj", "h_proj"}:
+                    raise ValueError(f"MaxwellMoe: invalid MTP projection pair for layer {mtp_idx}")
+                e_gen = projections.pop("e_proj")
+                h_gen = projections.pop("h_proj")
+                if not projections:
+                    del cls._mtp_proj_generators[bid]
+                name = f"model.layers.{bid}.eh_proj.weight"
+                gen = lambda e_gen=e_gen, h_gen=h_gen: torch.cat((e_gen(), h_gen()), dim=0)
+            elif rest.startswith("final_layernorm."):
+                name = f"model.norm.{rest[len('final_layernorm.'):]}"
+            elif rest.startswith("hc_head."):
+                name = f"model.{rest}"
+            else:
+                raise ValueError(f"MaxwellMoe: unsupported MTP tensor {name!r}")
+
+            return name, gen
+
+        if cls.mtp_only:
+            if name not in ("model.embed_tokens.weight", "lm_head.weight"):
+                return None
+
+        return name, gen
 
     def tensor_force_quant(self, name, new_name, bid, n_dims):
         # the reference runs the mHC mappings in fp32
@@ -191,3 +274,5 @@ class MaxwellMoeModel(TextModel):
                 raise ValueError(f"Unprocessed experts: {experts}")
         if self._hc_scale:
             raise ValueError(f"Unprocessed mHC gating factors: {sorted(self._hc_scale)}")
+        if type(self)._mtp_proj_generators:
+            raise ValueError(f"Unprocessed MTP projections: {sorted(type(self)._mtp_proj_generators)}")
