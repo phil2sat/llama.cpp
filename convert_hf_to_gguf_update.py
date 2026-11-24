@@ -169,6 +169,7 @@ models = [
     {"name": "k2-horizon",       "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/IFM/K2-Horizon-36B", },
     {"name": "inkling2",         "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/thinkingmachines/Inkling-2-Small", },
     {"name": "domyn-edge",       "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/domyn/Domyn-Edge-Teacher-IF", },
+    {"name": "maxwell",          "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/maxwell-model/Maxwell-V1-Flash", },
 ]
 
 # some models are known to be broken upstream, so we will skip them as exceptions
