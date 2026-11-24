@@ -10377,13 +10377,13 @@ struct test_top_k_mask : public test_case {
 
         ggml_tensor * blocks = nullptr;
         if (n_blk > 0) {
-            blocks = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_blk, n_pick);
+            blocks = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_blk, n_pick, 1, ns);
             ggml_set_name(blocks, "blocks");
         }
 
         ggml_tensor * extra = nullptr;
         if (n_extra > 0) {
-            extra = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_extra, nb, nh, ns);
+            extra = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_extra, nb, 1, ns);
             ggml_set_name(extra, "extra");
         }
 
@@ -11273,7 +11273,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_top_k_mask(type, 512, 0, 0, 32, 5, true, 9));
         // blocks picked per head, the mask broadcast over the heads
         test_cases.emplace_back(new test_top_k_mask(type, 512, 16, 32, 4, 0, true, 6, 4, 1));
-        test_cases.emplace_back(new test_top_k_mask(type, 1024, 8, 128, 16, 8, false, 3, 2, 2));
+        test_cases.emplace_back(new test_top_k_mask(type, 1024, 8, 128, 16, 8, false, 3, 2, 2)); // per-stream block maps with head-broadcast extras
         // one mask row for all rows and streams (QSA)
         test_cases.emplace_back(new test_top_k_mask(type, 1001, 4, 70, 16, 3, true, 7, 1, 1, false, true));
         test_cases.emplace_back(new test_top_k_mask(type, 512, 8, 16, 32, 7, true, 5, 1, 4, false, true));
