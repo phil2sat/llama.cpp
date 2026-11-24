@@ -7,13 +7,22 @@ common_chat_params common_chat_params_init_qwen3_coder(const common_chat_templat
     data.prompt            = common_chat_template_direct_apply_impl(tmpl, inputs);
     data.generation_prompt = common_chat_template_generation_prompt_impl(tmpl, inputs);
 
-    // the turn marker in front of the role: <|im_start|> in the Qwen family, renamed by some models
-    // (Maxwell: <|maxwell_start|>); taken from the assistant header the template renders
+    // Resolve the model's turn-start special token without absorbing prompt text before it.
     std::string turn_start = "<|im_start|>";
     {
-        const size_t pos = data.generation_prompt.find("assistant\n");
-        if (pos != std::string::npos && pos > 0) {
-            turn_start = data.generation_prompt.substr(0, pos);
+        const size_t role_pos = data.generation_prompt.find("assistant\n");
+        if (role_pos != std::string::npos) {
+            const size_t token_pos = data.generation_prompt.rfind("<|", role_pos);
+            if (token_pos != std::string::npos) {
+                const size_t token_end = data.generation_prompt.find("|>", token_pos);
+                if (token_end != std::string::npos && token_end + 2 <= role_pos) {
+                    const std::string_view separator(data.generation_prompt.data() + token_end + 2,
+                            role_pos - token_end - 2);
+                    if (std::all_of(separator.begin(), separator.end(), [](unsigned char c) { return std::isspace(c); })) {
+                        turn_start = data.generation_prompt.substr(token_pos, token_end + 2 - token_pos);
+                    }
+                }
+            }
         }
     }
     const std::string GEN_PREFIX = turn_start + "assistant\n";
