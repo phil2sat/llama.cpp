@@ -1505,10 +1505,12 @@ int ggml_metal_op_top_k_mask(ggml_metal_op_t ctx, int idx) {
         /*.nbs3    =*/ score  ? score->nb[3]  : 0,
         /*.nbb0    =*/ blocks ? blocks->nb[0] : 0,
         /*.nbb1    =*/ blocks ? blocks->nb[1] : 0,
+        /*.nbb2    =*/ blocks && blocks->ne[2] > 1 ? blocks->nb[2] : 0,
+        /*.nbb3    =*/ blocks && blocks->ne[3] > 1 ? blocks->nb[3] : 0,
         /*.nbe0    =*/ extra  ? extra->nb[0]  : 0,
-        /*.nbe1    =*/ extra  ? extra->nb[1]  : 0,
-        /*.nbe2    =*/ extra  ? extra->nb[2]  : 0,
-        /*.nbe3    =*/ extra  ? extra->nb[3]  : 0,
+        /*.nbe1    =*/ extra && extra->ne[1] > 1 ? extra->nb[1] : 0,
+        /*.nbe2    =*/ extra && extra->ne[2] > 1 ? extra->nb[2] : 0,
+        /*.nbe3    =*/ extra && extra->ne[3] > 1 ? extra->nb[3] : 0,
     };
 
     // the fill covers the whole dst, the scatter overwrites the kept cells with the mask values
