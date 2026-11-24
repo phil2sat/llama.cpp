@@ -267,6 +267,7 @@ struct vk_op_top_k_mask_push_constants {
     uint32_t m1; uint32_t m2; uint32_t m3;
     uint32_t nbm1; uint32_t nbm2; uint32_t nbm3;
     uint32_t nbd1; uint32_t nbd2; uint32_t nbd3;
+    uint32_t nbb1; uint32_t nbb2; uint32_t nbb3;
 
     uint32_t m_offset;
     uint32_t k_offset;
