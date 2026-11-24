@@ -280,8 +280,8 @@ uint32_t llama_kv_cache_msa_context::get_n_pos(const llama_ubatch * ubatch) cons
     }
 
     if (ubatch != nullptr) {
-        for (llama_pos pos : ubatch->pos) {
-            pos_max = std::max(pos_max, pos);
+        for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
+            pos_max = std::max(pos_max, ubatch->pos[i]);
         }
     }
 
