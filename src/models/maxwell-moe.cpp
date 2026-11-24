@@ -595,10 +595,34 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             Qcur->nb[1], Qcur->nb[2],
                             token_offset*Qcur->nb[2]);
 
-                    ggml_tensor * attn_chunk = build_attn_mha(
-                            q_chunk, k_stream, v_stream,
-                            nullptr, sparse_mask, nullptr, nullptr, nullptr,
-                            0, 1.0f/sqrtf(float(n_embd_head)), il);
+                    // Fold each contiguous GQA query-head group onto the FA sequence axis.
+                    // The mask's group dimension must align with the KV head selected by GQA:
+                    // query heads [0..7] use KV head 0, [8..15] use KV head 1, etc.
+                    const int64_t gqa_group_size = n_head / n_head_kv;
+                    GGML_ASSERT(n_head % n_head_kv == 0);
+                    GGML_ASSERT(sparse_mask->ne[2] == n_head_kv);
+
+                    ggml_tensor * q_fa = ggml_reshape_4d(
+                            ctx0, q_chunk, q_chunk->ne[0], gqa_group_size, n_head_kv, query_count);
+                    q_fa = ggml_permute(ctx0, q_fa, 0, 2, 3, 1);
+
+                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
+                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
+                    ggml_tensor * mask_fa = ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2);
+
+                    ggml_tensor * attn_fa = ggml_flash_attn_ext(
+                            ctx0, q_fa, k_fa, v_fa, mask_fa,
+                            1.0f/sqrtf(float(n_embd_head)), hparams.f_max_alibi_bias, 0.0f);
+                    ggml_prec_set_acc(attn_fa, GGML_PREC_F32);
+                    cb(attn_fa, "attn_sparse_fa", il);
+
+                    // [D, query_count, n_kv_heads, group_size] -> [D, n_heads, query_count].
+                    attn_chunk = ggml_permute(ctx0, attn_fa, 0, 1, 3, 2);
+                    if (!ggml_is_contiguous(attn_chunk)) {
+                        attn_chunk = ggml_cont(ctx0, attn_chunk);
+                    }
+                    attn_chunk = ggml_reshape_2d(
+                            ctx0, attn_chunk, q_chunk->ne[0] * n_head, query_count);
                     cb(attn_chunk, "attn_sparse_chunk", il);
 
                     query_outputs = query_outputs
