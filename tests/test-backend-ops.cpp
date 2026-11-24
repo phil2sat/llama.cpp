@@ -10536,6 +10536,10 @@ struct test_flash_attn_gqa_grouped : public test_case {
         return 0;
     }
 
+    bool run_whole_graph() override {
+        return true;
+    }
+
     // The graph returns grouped attention minus a per-query-head dense reference.
     // Both the CPU reference and every tested backend must therefore produce zero.
     double err(const float * a, const float * b, size_t n) override {
