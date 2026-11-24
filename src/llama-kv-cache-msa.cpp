@@ -495,7 +495,7 @@ void llama_kv_cache_msa_context::set_input_prefix_local_slots(
     for (int64_t s = 0; s < n_stream; ++s) {
         const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
         const auto & cells = kv->get_base()->get_cells(seq_id);
-        std::vector<int32_t> pos_to_cell(get_n_pos(), -1);
+        std::vector<int32_t> pos_to_cell(get_n_pos(ubatch), -1);
 
         for (uint32_t j = 0; j < cells.size(); ++j) {
             if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
@@ -562,7 +562,7 @@ void llama_kv_cache_msa_context::set_input_remote_block_mask(
 
     GGML_ASSERT(dst->ne[2] == 1);
     GGML_ASSERT(n_tokens == n_tps*n_stream);
-    GGML_ASSERT(n_blocks == get_n_pos() / block_size);
+    GGML_ASSERT(n_blocks == get_n_pos(ubatch) / block_size);
 
     float * data = (float *) dst->data;
     for (int64_t s = 0; s < n_stream; ++s) {
