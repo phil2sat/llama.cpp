@@ -435,6 +435,12 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                         indexer_k_pos->ne[0], indexer_k_pos->ne[1], 1, 1,
                         indexer_k_pos->nb[1], indexer_k_pos->nb[2], indexer_k_pos->nb[3],
                         stream*indexer_k_pos->nb[3]);
+                ggml_tensor * indexer_valid_stream = ggml_view_4d(ctx0, inp_attn->indexer_pos_valid,
+                        n_pos, 1, 1, 1,
+                        inp_attn->indexer_pos_valid->nb[1],
+                        inp_attn->indexer_pos_valid->nb[1],
+                        inp_attn->indexer_pos_valid->nb[1],
+                        stream*inp_attn->indexer_pos_valid->nb[1]);
 
                 for (int64_t query_start = 0; query_start < n_tokens_per_stream; query_start += query_chunk_size) {
                     const int64_t query_count = std::min<int64_t>(
@@ -460,6 +466,14 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                         token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
                         token_scores = ggml_scale(ctx0, token_scores,
                                 1.0f/sqrtf(float(hparams.indexer_head_size)));
+
+                        ggml_tensor * valid_chunk = ggml_view_4d(ctx0, indexer_valid_stream,
+                                key_count, 1, 1, 1,
+                                indexer_valid_stream->nb[1],
+                                indexer_valid_stream->nb[2],
+                                indexer_valid_stream->nb[3],
+                                key_start*indexer_valid_stream->nb[0]);
+                        token_scores = ggml_add(ctx0, token_scores, valid_chunk);
 
                         ggml_tensor * pooled = ggml_pool_1d(ctx0, token_scores, GGML_OP_POOL_MAX,
                                 hparams.indexer_block_size, hparams.indexer_block_size, 0);
