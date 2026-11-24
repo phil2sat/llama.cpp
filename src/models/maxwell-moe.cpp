@@ -685,16 +685,20 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
         ggml_build_forward_expand(gf, res->t_layer_inp[n_layer]);
     }
 
+    // Preserve all batch-token states when the device extraction path is active.
+    // The device buffer is indexed by original batch token, not by selected output token.
+    ggml_tensor * h_nextn_all = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_tokens);
+
     if (inp_out_ids) {
-        ggml_tensor * flat = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_tokens);
-        flat = ggml_get_rows(ctx0, flat, inp_out_ids);
+        ggml_tensor * flat = ggml_get_rows(ctx0, h_nextn_all, inp_out_ids);
         inpL = ggml_reshape_3d(ctx0, flat, n_embd, hc, n_outputs);
     }
 
-    // Preserve the four residual streams for the Maxwell MTP draft head.
-    res->t_h_nextn = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_outputs);
+    // Keep the full state for device extraction and the selected rows for host extraction.
+    res->t_h_nextn = cparams.embeddings_nextn_dev
+            ? h_nextn_all
+            : ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_outputs);
     cb(res->t_h_nextn, "h_nextn", -1);
-    inpL = ggml_reshape_3d(ctx0, res->t_h_nextn, n_embd, hc, n_outputs);
 
     cur = build_hc_head(inpL, model.hc_head_fn, model.hc_head_scale, model.hc_head_base);
     cb(cur, "hc_head", -1);
