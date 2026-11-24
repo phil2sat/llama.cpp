@@ -135,6 +135,7 @@ public:
     // Positions without a cell map to cell 0; consumers must mask them. Assumes one sequence per stream.
     void set_input_pos_slot(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_pos_mask(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_pos_valid_mask(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     // Build position-aligned block-to-cell maps for per-stream block routing.
     void set_input_block_slots(ggml_tensor * dst, const llama_ubatch * ubatch, int32_t block_size) const;
     // Keep prefix and local block cells for every query token.
