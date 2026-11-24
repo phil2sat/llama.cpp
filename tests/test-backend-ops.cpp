@@ -10546,7 +10546,7 @@ struct test_flash_attn_gqa_grouped : public test_case {
     double err(const float * a, const float * b, size_t n) override {
         double result = 0.0;
         for (size_t i = 0; i < n; ++i) {
-            result = std::max(result, std::max(std::fabs(a[i]), std::fabs(b[i])));
+            result = std::max(result, static_cast<double>(std::max(std::fabs(a[i]), std::fabs(b[i]))));
         }
         return result;
     }
