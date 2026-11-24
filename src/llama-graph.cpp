@@ -771,10 +771,10 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
         mctx_msa->get_idx()->set_input_k_idxs(self_k_idxs_idx, ubatch);
     }
     if (indexer_pos_slot) {
-        mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch, self_k_idxs);
+        mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch, self_k_idxs_idx);
     }
     if (indexer_pos_valid) {
-        mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch, self_k_idxs);
+        mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch, self_k_idxs_idx);
     }
     if (indexer_blocks) {
         mctx_msa->set_input_block_slots(indexer_blocks, ubatch, self_k_idxs, hparams.indexer_block_size);
