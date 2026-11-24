@@ -324,7 +324,9 @@ class MaxwellMoeModel(TextModel):
                 datas = [self._experts[bid].pop(f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight")
                          for xid in range(n_experts)]
                 merged = f"model.layers.{bid}.block_sparse_moe.experts.{wid}.weight"
-                yield from self._checked_tensor_names(\n                    super().modify_tensors(torch.stack(datas, dim=0), merged, bid), merged\n                )
+                yield from self._checked_tensor_names(
+                    super().modify_tensors(torch.stack(datas, dim=0), merged, bid), merged
+                )
             return
 
         if name.endswith(".block_sparse_moe.expert_bias"):
