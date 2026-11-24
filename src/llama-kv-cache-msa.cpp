@@ -345,6 +345,40 @@ void llama_kv_cache_msa_context::set_input_pos_slot(ggml_tensor * dst, const lla
     }
 }
 
+void llama_kv_cache_msa_context::set_input_pos_valid_mask(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+    const int64_t n_pos = dst->ne[0];
+    const int64_t n_stream = dst->ne[1];
+    const int64_t n_tokens = ubatch->n_tokens;
+
+    GGML_ASSERT(n_pos == get_n_pos());
+    GGML_ASSERT(n_tokens % n_stream == 0);
+
+    const int64_t n_tps = n_tokens / n_stream;
+    float * data = (float *) dst->data;
+
+    for (int64_t s = 0; s < n_stream; ++s) {
+        const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
+        const auto & cells = kv->get_base()->get_cells(seq_id);
+        float * row = data + s*dst->nb[1]/sizeof(float);
+        std::fill(row, row + n_pos, -INFINITY);
+
+        for (uint32_t j = 0; j < cells.size(); ++j) {
+            if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+                continue;
+            }
+            const llama_pos pos = cells.pos_get(j);
+            if (pos >= 0 && pos < n_pos) {
+                row[pos] = 0.0f;
+            }
+        }
+    }
+}
+
 void llama_kv_cache_msa_context::set_input_block_slots(
         ggml_tensor * dst,
         const llama_ubatch * ubatch,
