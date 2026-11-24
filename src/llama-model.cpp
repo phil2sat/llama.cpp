@@ -3148,7 +3148,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         params.type_v,
                         !cparams.flash_attn,
                         cparams.offload_kqv,
-                        false, // Maxwell block routing needs one independently mapped cache stream per sequence.
+                        cparams.kv_unified,
                         cparams.n_ctx_seq,
                         cparams.n_seq_max,
                         hparams.n_swa,
