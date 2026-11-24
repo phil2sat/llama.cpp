@@ -4083,11 +4083,13 @@ llm_graph_input_attn_k_dsa_iswa * llm_graph_context::build_attn_inp_k_dsa_iswa()
     return (llm_graph_input_attn_k_dsa_iswa *) res->add_input(std::move(inp));
 }
 
-llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled) const {
+llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled, bool force_per_stream) const {
     const auto * mctx_cur = static_cast<const llama_kv_cache_msa_context *>(mctx);
 
     llama_cparams cparams_msa = cparams;
-    cparams_msa.kv_unified = false;
+    if (force_per_stream) {
+        cparams_msa.kv_unified = false;
+    }
     auto inp = std::make_unique<llm_graph_input_attn_kv_msa>(hparams, cparams_msa, mctx_cur);
 
     const auto * mctx_base = mctx_cur->get_base();
