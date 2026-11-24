@@ -53,11 +53,6 @@ void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
         hparams.indexer_prefix_blocks == 0) {
         throw std::runtime_error("maxwell-moe: indexer block size, top-k, prefix blocks and local blocks must be > 0");
     }
-    if (hparams.indexer_top_k > 32) {
-        throw std::runtime_error(format(
-                "maxwell-moe: indexer top-k (%u) exceeds the supported maximum of 32 remote blocks",
-                hparams.indexer_top_k));
-    }
 
     switch (hparams.n_layer()) {
         case 45: type = LLM_TYPE_35B_A3B; break;
