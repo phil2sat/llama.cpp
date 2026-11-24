@@ -8194,6 +8194,9 @@ void ggml_vk_top_k_mask(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_
         (uint32_t)mask->ne[1], (uint32_t)mask->ne[2], (uint32_t)mask->ne[3],
         ggml_vk_nb_elem(mask, 1), ggml_vk_nb_elem(mask, 2), ggml_vk_nb_elem(mask, 3),
         ggml_vk_nb_elem(dst,  1), ggml_vk_nb_elem(dst,  2), ggml_vk_nb_elem(dst,  3),
+        blocks ? ggml_vk_nb_elem(blocks, 1) : 0,
+        blocks ? ggml_vk_nb_elem(blocks, 2) : 0,
+        blocks ? ggml_vk_nb_elem(blocks, 3) : 0,
         0, 0, 0, 0, 0, 0,
     };
     init_pushconst_tensor_offsets(ctx, pc, mask, top_k, score, blocks, dst);
