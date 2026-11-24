@@ -305,6 +305,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_laguna(params);
         case LLM_ARCH_RICURSIVE:
             return new llama_model_ricursive(params);
+        case LLM_ARCH_MAXWELL_MOE:
+            return new llama_model_maxwell_moe(params);
         case LLM_ARCH_ERNIE4_5:
             return new llama_model_ernie4_5(params);
         case LLM_ARCH_ERNIE4_5_MOE:
@@ -3974,6 +3976,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_LLADA_MOE:
         case LLM_ARCH_RND1:
         case LLM_ARCH_RICURSIVE:
+        case LLM_ARCH_MAXWELL_MOE:
         case LLM_ARCH_OLMO2:
         case LLM_ARCH_OLMOE:
         case LLM_ARCH_PHI2:
