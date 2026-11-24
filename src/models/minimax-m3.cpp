@@ -180,40 +180,6 @@ public:
 };
 
 // One FA call for all GQA groups (and at multi-stream decode, all streams) by mapping them onto the FA sequence dim (ne[3])
-ggml_tensor * llama_model_minimax_m3::graph::build_attn_msa_fa(
-        ggml_tensor * q_cur,   // [D, HQ, T]
-        ggml_tensor * k,       // [D, n_keys, 1, C]
-        ggml_tensor * v,       // [D, n_keys, 1, C]
-        ggml_tensor * mask,    // [n_keys, R, 1, C] f16, contiguous
-        int64_t Gp, float kq_scale, int il) const {
-
-    const int64_t D  = q_cur->ne[0];
-    const int64_t HQ = q_cur->ne[1];
-    const int64_t T  = q_cur->ne[2];
-    const int64_t C  = k->ne[3];
-    const int64_t R  = HQ*T/(Gp*C);
-    GGML_ASSERT(Gp*C*R == HQ*T);
-    GGML_ASSERT(mask->type == GGML_TYPE_F16);
-
-    // [D, HQ, T] -> [D, Gp, C, R] -> [D, R, Gp, C]
-    // batch  (C=HKV,   R=T): channel = group
-    // decode (C=HKV*ns, R=1): channel = (group, stream), group innermost
-    ggml_tensor * q = ggml_reshape_4d(ctx0, q_cur, D, Gp, C, R);
-    q = ggml_permute(ctx0, q, 0, 2, 3, 1);
-
-    ggml_tensor * o = ggml_flash_attn_ext(ctx0, q, k, v, mask, kq_scale,
-                                          hparams.f_max_alibi_bias, 0.0f);
-    ggml_prec_set_acc(o, GGML_PREC_F32);
-    cb(o, "msa_fattn", il);
-
-    // [D, Gp, R, C] -> [D, Gp, C, R] -> [n_embd, T]
-    o = ggml_permute(ctx0, o, 0, 1, 3, 2);
-    if (!ggml_is_contiguous(o)) {
-        o = ggml_cont(ctx0, o);   // no-op layout at decode (R == 1), copy at batch
-    }
-    return ggml_reshape_2d(ctx0, o, D*HQ, T);
-}
-
 llama_model_minimax_m3::graph::graph(const llm_graph_params & params) : llm_graph_context(params) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     const auto & mm = static_cast<const llama_model_minimax_m3 &>(model);
