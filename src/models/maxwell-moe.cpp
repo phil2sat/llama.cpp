@@ -410,7 +410,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             // Convert the indexer cache from cache-cell order to token-position order.
             ggml_tensor * indexer_pos_slot = ggml_reshape_3d(
                     ctx0, inp_attn->indexer_pos_slot, n_pos, 1, n_stream);
-            ggml_tensor * indexer_k_cache = mctx_idx->get_k(ctx0, il);
+            ggml_tensor * indexer_k_cache = ggml_permute(ctx0, mctx_idx->get_k(ctx0, il), 0, 2, 1, 3);
             ggml_tensor * indexer_k_pos = ggml_get_rows(ctx0, indexer_k_cache, indexer_pos_slot);
             cb(indexer_k_pos, "indexer_k_pos", il);
 
