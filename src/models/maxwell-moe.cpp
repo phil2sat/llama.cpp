@@ -598,19 +598,17 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             Qcur->nb[1], Qcur->nb[2],
                             token_offset*Qcur->nb[2]);
 
-                    // Fold each contiguous GQA query-head group onto the FA sequence axis.
-                    // The mask's group dimension must align with the KV head selected by GQA:
-                    // query heads [0..7] use KV head 0, [8..15] use KV head 1, etc.
-                    const int64_t gqa_group_size = n_head / n_head_kv;
-                    GGML_ASSERT(n_head % n_head_kv == 0);
-                    GGML_ASSERT(sparse_mask->ne[2] == n_head_kv);
-
-                    // Match the MSA Flash Attention layout: [head_dim, kv_tokens, 1, kv_heads].
+                    // Match the grouped-query ratio to the actual query and KV tensor dimensions.
+                    // This also keeps synthetic test models with non-production head layouts valid.
                     ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 2, 3, 1);
                     ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 2, 3, 1);
                     // Flash Attention requires an F16 mask; top-k masking produces F32.
                     ggml_tensor * mask_fa = ggml_cast(ctx0,
                             ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2), GGML_TYPE_F16);
+
+                    GGML_ASSERT(k_fa->ne[3] == mask_fa->ne[3]);
+                    GGML_ASSERT(q_chunk->ne[1] % k_fa->ne[3] == 0);
+                    const int64_t gqa_group_size = q_chunk->ne[1] / k_fa->ne[3];
 
                     ggml_tensor * attn_chunk = build_attn_msa_fa(
                             q_chunk, k_fa, v_fa, mask_fa, gqa_group_size, kq_scale, il);
