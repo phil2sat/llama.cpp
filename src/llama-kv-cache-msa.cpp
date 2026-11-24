@@ -357,7 +357,7 @@ void llama_kv_cache_msa_context::set_input_pos_slot(
             const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
             for (int64_t t = 0; t < n_tps; ++t) {
                 const llama_pos pos = ubatch->pos[s*n_tps + t];
-                if (pos >= 0 && pos < n_pos) {
+                if (token_slots[t] >= 0 && pos >= 0 && pos < n_pos) {
                     map[pos] = (int32_t) (token_slots[t] % kv->get_base()->get_size());
                 }
             }
@@ -377,7 +377,8 @@ void llama_kv_cache_msa_context::set_input_pos_slot(
 
 void llama_kv_cache_msa_context::set_input_pos_valid_mask(
         ggml_tensor * dst,
-        const llama_ubatch * ubatch) const {
+        const llama_ubatch * ubatch,
+        const ggml_tensor * k_idxs) const {
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
 
@@ -406,9 +407,10 @@ void llama_kv_cache_msa_context::set_input_pos_valid_mask(
                 row[pos] = 0.0f;
             }
         }
+        const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
         for (int64_t t = 0; t < n_tps; ++t) {
             const llama_pos pos = ubatch->pos[s*n_tps + t];
-            if (pos >= 0 && pos < n_pos) {
+            if (token_slots[t] >= 0 && pos >= 0 && pos < n_pos) {
                 row[pos] = 0.0f;
             }
         }
