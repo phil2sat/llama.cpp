@@ -14,8 +14,10 @@ static __global__ void top_k_mask_kernel(
         const int64_t sd1, const int64_t sd2, const int64_t sd3,
         const int64_t sk0, const int64_t sk1, const int64_t sk2, const int64_t sk3,
         const int64_t ss0, const int64_t ss1, const int64_t ss2, const int64_t ss3,
-        const int64_t sb0, const int64_t sb1,
+        const int64_t sb0, const int64_t sb1, const int64_t sb2, const int64_t sb3,
+        const int64_t bn2, const int64_t bn3,
         const int64_t se0, const int64_t se1, const int64_t se2, const int64_t se3,
+        const int64_t en1, const int64_t en2, const int64_t en3,
         const bool vec) {
     ggml_cuda_pdl_lc();
 
@@ -53,7 +55,7 @@ static __global__ void top_k_mask_kernel(
     // one thread per pick or extra cell; cells kept twice get the same value
     for (int64_t i = threadIdx.x; i < n_top + n_extra; i += blockDim.x) {
         if (i >= n_top) {
-            const int32_t c = extra[(i - n_top)*se0 + i1*se1 + i2*se2 + i3*se3];
+            const int32_t c = extra[(i - n_top)*se0 + (i1 % en1)*se1 + (i2 % en2)*se2 + (i3 % en3)*se3];
             if (c >= 0 && c < n_kv) {
                 dst_row[c] = mask_row[c];
             }
@@ -74,7 +76,7 @@ static __global__ void top_k_mask_kernel(
             continue;
         }
         for (int64_t k = 0; k < n_blk; ++k) {
-            const int32_t c = blocks[k*sb0 + p*sb1];
+            const int32_t c = blocks[k*sb0 + p*sb1 + (i2 % bn2)*sb2 + (i3 % bn3)*sb3];
             if (c >= 0 && c < n_kv) {
                 dst_row[c] = mask_row[c];
             }
@@ -123,7 +125,10 @@ static void top_k_mask_cuda(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
             top_k->nb[0]/si, top_k->nb[1]/si, top_k->nb[2]/si, top_k->nb[3]/si,
             score  ? score->nb[0]/sf  : 0, score ? score->nb[1]/sf : 0, score ? score->nb[2]/sf : 0, score ? score->nb[3]/sf : 0,
             blocks ? blocks->nb[0]/si : 0, blocks ? blocks->nb[1]/si : 0,
+            blocks ? blocks->nb[2]/si : 0, blocks ? blocks->nb[3]/si : 0,
+            blocks ? blocks->ne[2] : 1, blocks ? blocks->ne[3] : 1,
             extra  ? extra->nb[0]/si  : 0, extra ? extra->nb[1]/si : 0, extra ? extra->nb[2]/si : 0, extra ? extra->nb[3]/si : 0,
+            extra ? extra->ne[1] : 1, extra ? extra->ne[2] : 1, extra ? extra->ne[3] : 1,
             vec);
 }
 
