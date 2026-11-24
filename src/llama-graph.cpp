@@ -774,7 +774,7 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
         mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch, self_k_idxs);
     }
     if (indexer_pos_valid) {
-        mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch);
+        mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch, self_k_idxs);
     }
     if (indexer_blocks) {
         mctx_msa->set_input_block_slots(indexer_blocks, ubatch, self_k_idxs, hparams.indexer_block_size);
