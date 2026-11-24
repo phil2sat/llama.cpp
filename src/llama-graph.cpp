@@ -806,7 +806,7 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
         const int64_t n_stream = params.ubatch.n_seqs_unq;
         const int64_t n_tps = params.ubatch.n_tokens / n_stream;
         const int64_t n_blocks = mctx_msa->get_n_pos() / hparams.indexer_block_size;
-        res &= indexer_pos_slot->ne[0] == mctx_msa->get_n_pos();
+        res &= indexer_pos_slot->ne[0] == mctx_msa->get_n_pos(&params.ubatch);
         res &= indexer_pos_slot->ne[1] == n_stream;
         res &= indexer_pos_valid->ne[0] == mctx_msa->get_n_pos();
         res &= indexer_pos_valid->ne[1] == n_stream;
@@ -4075,7 +4075,7 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
     if (msa_enabled) {
         inp->self_k_idxs_idx = mctx_idx->build_input_k_idxs(ctx0, ubatch);
 
-        const int64_t n_pos = mctx_cur->get_n_pos();
+        const int64_t n_pos = mctx_cur->get_n_pos(&ubatch);
         const int64_t n_stream = ubatch.n_seqs_unq;
         const int64_t n_tps = ubatch.n_tokens / n_stream;
         const int64_t block_size = hparams.indexer_block_size;
