@@ -2233,6 +2233,9 @@ class TextModel(ModelBase):
         if chkhsh == "1f9825a388f700a6b591722f17d470cbbcf10973ece35d2fd14239a14110ae1a":
             # ref: https://huggingface.co/IFM/K2-Horizon-0.9B
             res = "k2-horizon"
+        if chkhsh == "81a5d106ca83f5e2fada2c5d39b3adb0f83c685e4cf50f16e50752e0cbe91e80":
+            # ref: https://huggingface.co/maxwell-model/Maxwell-V1-Flash
+            res = "maxwell"
         if chkhsh == "0ef9807a4087ebef797fc749390439009c3b9eda9ad1a097abbe738f486c01e5":
             # ref: https://huggingface.co/meta-llama/Meta-Llama-3-8B
             res = "llama-bpe"
@@ -2470,9 +2473,6 @@ class TextModel(ModelBase):
         if chkhsh == "5635e1c8d621dff7b4825f41f2f97b6ceb39bcf2d5c541db28577080d6efd5e5":
             # ref: https://huggingface.co/thinkingmachines/Inkling-2-Small
             res = "inkling2"
-        if chkhsh == "81a5d106ca83f5e2fada2c5d39b3adb0f83c685e4cf50f16e50752e0cbe91e80":
-            # ref: https://huggingface.co/maxwell-model/Maxwell-V1-Flash
-            res = "maxwell"
         if chkhsh == "32d85c31273f8019248f2559fed492d929ea28b17e51d81d3bb36fff23ca72b3":
             # ref: https://huggingface.co/domyn/Domyn-Edge-Teacher-IF
             res = "domyn-edge"
