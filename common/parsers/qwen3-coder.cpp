@@ -1,5 +1,9 @@
 #include "parsers.h"
 
+#include <algorithm>
+#include <cctype>
+#include <string_view>
+
 common_chat_params common_chat_params_init_qwen3_coder(const common_chat_template &          tmpl,
                                                               const autoparser::generation_params & inputs) {
     common_chat_params data;
