@@ -368,6 +368,9 @@ llama_model_maxwell_moe::graph::graph(
 
 llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_graph_context(params) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
+    const float kq_scale = hparams.f_attention_scale == 0.0f
+            ? 1.0f/sqrtf(float(n_embd_head))
+            : hparams.f_attention_scale;
 
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
     GGML_ASSERT(n_embd_head == n_rot);
@@ -602,27 +605,12 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                     GGML_ASSERT(n_head % n_head_kv == 0);
                     GGML_ASSERT(sparse_mask->ne[2] == n_head_kv);
 
-                    ggml_tensor * q_fa = ggml_reshape_4d(
-                            ctx0, q_chunk, q_chunk->ne[0], gqa_group_size, n_head_kv, query_count);
-                    q_fa = ggml_permute(ctx0, q_fa, 0, 2, 3, 1);
-
                     ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
                     ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
                     ggml_tensor * mask_fa = ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2);
 
-                    ggml_tensor * attn_fa = ggml_flash_attn_ext(
-                            ctx0, q_fa, k_fa, v_fa, mask_fa,
-                            1.0f/sqrtf(float(n_embd_head)), hparams.f_max_alibi_bias, 0.0f);
-                    ggml_prec_set_acc(attn_fa, GGML_PREC_F32);
-                    cb(attn_fa, "attn_sparse_fa", il);
-
-                    // [D, query_count, n_kv_heads, group_size] -> [D, n_heads, query_count].
-                    ggml_tensor * attn_chunk = ggml_permute(ctx0, attn_fa, 0, 1, 3, 2);
-                    if (!ggml_is_contiguous(attn_chunk)) {
-                        attn_chunk = ggml_cont(ctx0, attn_chunk);
-                    }
-                    attn_chunk = ggml_reshape_2d(
-                            ctx0, attn_chunk, q_chunk->ne[0] * n_head, query_count);
+                    ggml_tensor * attn_chunk = build_attn_msa_fa(
+                            q_chunk, k_fa, v_fa, mask_fa, gqa_group_size, kq_scale, il);
                     cb(attn_chunk, "attn_sparse_chunk", il);
 
                     query_outputs = query_outputs
