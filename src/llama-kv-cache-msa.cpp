@@ -414,22 +414,22 @@ void llama_kv_cache_msa_context::set_input_prefix_local_slots(
     std::fill(data, data + ggml_nelements(dst), -1);
 
     for (int64_t s = 0; s < n_stream; ++s) {
+        const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
+        const auto & cells = kv->get_base()->get_cells(seq_id);
+        std::vector<int32_t> pos_to_cell(get_n_pos(), -1);
+
+        for (uint32_t j = 0; j < cells.size(); ++j) {
+            if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+                continue;
+            }
+            const llama_pos pos = cells.pos_get(j);
+            if (pos >= 0 && pos < (llama_pos) pos_to_cell.size()) {
+                pos_to_cell[pos] = (int32_t) j;
+            }
+        }
+
         for (int64_t t = 0; t < n_tps; ++t) {
             const int64_t token = s*n_tps + t;
-            const llama_seq_id seq_id = ubatch->seq_id[token][0];
-            const auto & cells = kv->get_base()->get_cells(seq_id);
-            std::vector<int32_t> pos_to_cell(get_n_pos(), -1);
-
-            for (uint32_t j = 0; j < cells.size(); ++j) {
-                if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
-                    continue;
-                }
-                const llama_pos pos = cells.pos_get(j);
-                if (pos >= 0 && pos < (llama_pos) pos_to_cell.size()) {
-                    pos_to_cell[pos] = (int32_t) j;
-                }
-            }
-
             const int64_t query_block = ubatch->pos[token] / block_size;
             int64_t out = 0;
 
