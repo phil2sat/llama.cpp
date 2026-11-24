@@ -14949,6 +14949,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // GQA-style head broadcasting: one base mask is shared by four independently selected head groups.
+    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 1, true));
+    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 2, true));
+
     // launch-overhead isolation: single L2_NORM launch vs batched siblings at the GDN
     // production shape (strided qkv views) -- perf-mode only, the eval list has its own
     // 2/4-wide coverage
