@@ -3304,9 +3304,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
             } break;
         case LLM_ARCH_MAXWELL_MOE:
             {
-                // Maxwell keeps ordinary GQA K/V and a separate single-head indexer K cache.
+                // MSA routing requires one independently mapped cache stream per sequence.
                 const llama_kv_cache::layer_filter_cb filter_idx =
                     [&](uint32_t il) { return il < hparams.n_layer(); };
+
+                if (cparams.kv_unified) {
+                    LLAMA_LOG_WARN("%s: --kv-unified is not supported for Maxwell MSA; using per-sequence KV streams\n", __func__);
+                }
 
                 res = new llama_kv_cache_msa(
                         *this,
@@ -3315,7 +3319,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         params.type_v,
                         !cparams.flash_attn,
                         cparams.offload_kqv,
-                        cparams.kv_unified,
+                        false,
                         cparams.n_ctx_seq,
                         cparams.n_seq_max,
                         hparams.n_swa,
