@@ -1363,6 +1363,8 @@ typedef struct {
     uint64_t nbs3;
     uint64_t nbb0;
     uint64_t nbb1;
+    uint64_t nbb2;
+    uint64_t nbb3;
     uint64_t nbe0;
     uint64_t nbe1;
     uint64_t nbe2;
