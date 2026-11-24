@@ -606,8 +606,8 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             ctx0, q_chunk, q_chunk->ne[0], gqa_group_size, n_head_kv, query_count);
                     q_fa = ggml_permute(ctx0, q_fa, 0, 2, 3, 1);
 
-                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
-                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
+                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 2, 3, 1);
+                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 2, 3, 1);
                     ggml_tensor * mask_fa = ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2);
 
                     ggml_tensor * attn_fa = ggml_flash_attn_ext(
