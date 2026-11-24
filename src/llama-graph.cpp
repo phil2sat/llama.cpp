@@ -3175,6 +3175,39 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
     return pos_bias;
 }
 
+ggml_tensor * llm_graph_context::build_attn_msa_fa(
+        ggml_tensor * q_cur,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * mask,
+        int64_t Gp, float kq_scale, int il) const {
+    const int64_t D  = q_cur->ne[0];
+    const int64_t HQ = q_cur->ne[1];
+    const int64_t T  = q_cur->ne[2];
+    const int64_t C  = k->ne[3];
+    GGML_ASSERT(Gp > 0 && C > 0);
+    GGML_ASSERT(HQ*T % (Gp*C) == 0);
+    const int64_t R = HQ*T/(Gp*C);
+    GGML_ASSERT(mask->type == GGML_TYPE_F16);
+    GGML_ASSERT(mask->ne[0] == k->ne[1]);
+    GGML_ASSERT(mask->ne[1] == R && mask->ne[2] == 1 && mask->ne[3] == C);
+
+    // Fold GQA query groups onto Flash Attention's sequence dimension.
+    ggml_tensor * q = ggml_reshape_4d(ctx0, q_cur, D, Gp, C, R);
+    q = ggml_permute(ctx0, q, 0, 2, 3, 1);
+
+    ggml_tensor * o = ggml_flash_attn_ext(ctx0, q, k, v, mask, kq_scale,
+                                          hparams.f_max_alibi_bias, 0.0f);
+    ggml_prec_set_acc(o, GGML_PREC_F32);
+    cb(o, "msa_fattn", il);
+
+    o = ggml_permute(ctx0, o, 0, 1, 3, 2);
+    if (!ggml_is_contiguous(o)) {
+        o = ggml_cont(ctx0, o);
+    }
+    return ggml_reshape_2d(ctx0, o, D*HQ, T);
+}
+
 ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * q,
          ggml_tensor * k,
