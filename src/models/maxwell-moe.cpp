@@ -368,21 +368,176 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             cb(Kcur, "Kcur", il);
             cb(Vcur, "Vcur", il);
 
-            // Project and cache the shared post-RoPE indexer keys. The indexer cache
-            // is kept in lockstep with the ordinary GQA K/V cache by llama_kv_cache_msa.
+            // Project the shared indexer key and the per-KV-group indexer queries.
+            ggml_tensor * indexer_q = build_lora_mm(layer.index_q_proj, cur);
+            indexer_q = ggml_reshape_3d(ctx0, indexer_q,
+                    hparams.indexer_head_size, hparams.indexer_n_head, n_tokens);
+            indexer_q = build_norm(indexer_q, layer.index_q_norm, nullptr, LLM_NORM_RMS, il);
+            indexer_q = build_rope_indexer(indexer_q, inp_pos, il);
+            cb(indexer_q, "indexer_q", il);
+
             ggml_tensor * indexer_k = build_lora_mm(layer.index_k_proj, cur);
             indexer_k = build_norm(indexer_k, layer.index_k_norm, nullptr, LLM_NORM_RMS, il);
             indexer_k = ggml_reshape_3d(ctx0, indexer_k, hparams.indexer_head_size, 1, n_tokens);
             indexer_k = build_rope_indexer(indexer_k, inp_pos, il);
             cb(indexer_k, "indexer_k", il);
 
-            const auto * mctx_idx = inp_attn->mctx_msa->get_idx();
+            const auto * mctx_base = inp_attn->mctx_msa->get_base();
+            const auto * mctx_idx  = inp_attn->mctx_msa->get_idx();
+
+            // Keep both cache writes ahead of the route construction and attention reads.
+            ggml_build_forward_expand(gf, Qcur);
+            ggml_build_forward_expand(gf, Kcur);
+            ggml_build_forward_expand(gf, Vcur);
+            ggml_build_forward_expand(gf, mctx_base->cpy_k(ctx0, Kcur, inp_attn->get_k_idxs(), il));
+            ggml_build_forward_expand(gf, mctx_base->cpy_v(ctx0, Vcur, inp_attn->get_v_idxs(), il));
             ggml_build_forward_expand(gf, mctx_idx->cpy_k(
                     ctx0, indexer_k, inp_attn->get_k_idxs_idx(), il));
 
-            cur = build_attn(inp_attn,
-                    layer.wo, layer.wo_b, layer.wo_s,
-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+            const int64_t n_pos = inp_attn->mctx_msa->get_n_pos();
+            const int64_t n_blocks = n_pos / hparams.indexer_block_size;
+            const int64_t n_stream = ubatch.n_seqs_unq;
+            const int64_t n_tokens_per_stream = n_tokens / n_stream;
+            const int64_t n_indexer_groups = hparams.indexer_n_head;
+            const int64_t n_top_k = std::min<int64_t>(hparams.indexer_top_k, n_blocks);
+            const int64_t query_chunk_size = 64;
+            const int64_t key_chunk_size = 8192;
+
+            GGML_ASSERT(n_pos % hparams.indexer_block_size == 0);
+            GGML_ASSERT(n_tokens % n_stream == 0);
+            GGML_ASSERT(n_indexer_groups == n_head_kv);
+
+            // Convert the indexer cache from cache-cell order to token-position order.
+            ggml_tensor * indexer_pos_slot = ggml_reshape_3d(
+                    ctx0, inp_attn->indexer_pos_slot, n_pos, 1, n_stream);
+            ggml_tensor * indexer_k_cache = mctx_idx->get_k(ctx0, il);
+            ggml_tensor * indexer_k_pos = ggml_get_rows(ctx0, indexer_k_cache, indexer_pos_slot);
+            cb(indexer_k_pos, "indexer_k_pos", il);
+
+            ggml_tensor * k_cache = mctx_base->get_k(ctx0, il);
+            ggml_tensor * v_cache = mctx_base->get_v(ctx0, il);
+
+            ggml_tensor * stream_outputs = nullptr;
+
+            for (int64_t stream = 0; stream < n_stream; ++stream) {
+                ggml_tensor * query_outputs = nullptr;
+
+                ggml_tensor * k_stream = ggml_view_4d(ctx0, k_cache,
+                        k_cache->ne[0], k_cache->ne[1], k_cache->ne[2], 1,
+                        k_cache->nb[1], k_cache->nb[2], k_cache->nb[3],
+                        stream*k_cache->nb[3]);
+                ggml_tensor * v_stream = ggml_view_4d(ctx0, v_cache,
+                        v_cache->ne[0], v_cache->ne[1], v_cache->ne[2], 1,
+                        v_cache->nb[1], v_cache->nb[2], v_cache->nb[3],
+                        stream*v_cache->nb[3]);
+
+                ggml_tensor * indexer_k_stream = ggml_view_4d(ctx0, indexer_k_pos,
+                        indexer_k_pos->ne[0], indexer_k_pos->ne[1], 1, 1,
+                        indexer_k_pos->nb[1], indexer_k_pos->nb[2], indexer_k_pos->nb[3],
+                        stream*indexer_k_pos->nb[3]);
+
+                for (int64_t query_start = 0; query_start < n_tokens_per_stream; query_start += query_chunk_size) {
+                    const int64_t query_count = std::min<int64_t>(
+                            query_chunk_size, n_tokens_per_stream - query_start);
+                    const int64_t token_offset = stream*n_tokens_per_stream + query_start;
+
+                    ggml_tensor * indexer_q_chunk = ggml_view_3d(ctx0, indexer_q,
+                            indexer_q->ne[0], indexer_q->ne[1], query_count,
+                            indexer_q->nb[1], indexer_q->nb[2],
+                            token_offset*indexer_q->nb[2]);
+
+                    ggml_tensor * block_scores = nullptr;
+
+                    // Bound the score temporary to key_chunk_size * query_count * groups.
+                    for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
+                        const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
+                        ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_stream,
+                                indexer_k_stream->ne[0], key_count, 1, 1,
+                                indexer_k_stream->nb[1], indexer_k_stream->nb[2], indexer_k_stream->nb[3],
+                                key_start*indexer_k_stream->nb[1]);
+
+                        ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
+                        token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
+                        token_scores = ggml_scale(ctx0, token_scores,
+                                1.0f/sqrtf(float(hparams.indexer_head_size)));
+
+                        ggml_tensor * pooled = ggml_pool_1d(ctx0, token_scores, GGML_OP_POOL_MAX,
+                                hparams.indexer_block_size, hparams.indexer_block_size, 0);
+                        cb(pooled, "indexer_block_scores", il);
+
+                        block_scores = block_scores
+                                ? ggml_concat(ctx0, block_scores, pooled, 0)
+                                : pooled;
+                    }
+
+                    ggml_tensor * remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
+                            n_blocks, query_count, 1, 1,
+                            inp_attn->indexer_remote_mask->nb[1],
+                            inp_attn->indexer_remote_mask->nb[2],
+                            inp_attn->indexer_remote_mask->nb[3],
+                            stream*inp_attn->indexer_remote_mask->nb[3]
+                                + query_start*inp_attn->indexer_remote_mask->nb[1]);
+                    block_scores = ggml_add(ctx0, block_scores, remote_mask);
+                    cb(block_scores, "indexer_remote_scores", il);
+
+                    ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, block_scores, n_top_k));
+                    cb(top_k, "indexer_top_k", il);
+
+                    ggml_tensor * base_mask = ggml_view_4d(ctx0, inp_attn->self_attn_mask.raw,
+                            inp_attn->self_attn_mask.raw->ne[0], query_count, 1, 1,
+                            inp_attn->self_attn_mask.raw->nb[1],
+                            inp_attn->self_attn_mask.raw->nb[2],
+                            inp_attn->self_attn_mask.raw->nb[3],
+                            stream*inp_attn->self_attn_mask.raw->nb[3]
+                                + query_start*inp_attn->self_attn_mask.raw->nb[1]);
+
+                    ggml_tensor * blocks = ggml_view_4d(ctx0, inp_attn->indexer_blocks,
+                            hparams.indexer_block_size, n_blocks, 1, 1,
+                            inp_attn->indexer_blocks->nb[1],
+                            inp_attn->indexer_blocks->nb[2],
+                            inp_attn->indexer_blocks->nb[3],
+                            stream*inp_attn->indexer_blocks->nb[3]);
+
+                    const int64_t n_extra =
+                            (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)
+                            * hparams.indexer_block_size;
+                    ggml_tensor * extra = ggml_view_4d(ctx0, inp_attn->indexer_extra,
+                            n_extra, query_count, 1, 1,
+                            inp_attn->indexer_extra->nb[1],
+                            inp_attn->indexer_extra->nb[2],
+                            inp_attn->indexer_extra->nb[3],
+                            stream*inp_attn->indexer_extra->nb[3]
+                                + query_start*inp_attn->indexer_extra->nb[1]);
+
+                    ggml_tensor * sparse_mask = ggml_top_k_mask(
+                            ctx0, base_mask, top_k, block_scores, blocks, extra);
+                    cb(sparse_mask, "maxwell_sparse_mask", il);
+
+                    ggml_tensor * q_chunk = ggml_view_3d(ctx0, Qcur,
+                            Qcur->ne[0], Qcur->ne[1], query_count,
+                            Qcur->nb[1], Qcur->nb[2],
+                            token_offset*Qcur->nb[2]);
+
+                    ggml_tensor * attn_chunk = build_attn_mha(
+                            q_chunk, k_stream, v_stream,
+                            nullptr, sparse_mask, nullptr, nullptr, nullptr,
+                            0, 1.0f/sqrtf(float(n_embd_head)), il);
+                    cb(attn_chunk, "attn_sparse_chunk", il);
+
+                    query_outputs = query_outputs
+                            ? ggml_concat(ctx0, query_outputs, attn_chunk, 1)
+                            : attn_chunk;
+                }
+
+                stream_outputs = stream_outputs
+                        ? ggml_concat(ctx0, stream_outputs, query_outputs, 1)
+                        : query_outputs;
+            }
+
+            cur = build_lora_mm(layer.wo, stream_outputs, layer.wo_s);
+            if (layer.wo_b) {
+                cur = ggml_add(ctx0, cur, layer.wo_b);
+            }
             cb(cur, "attn_out", il);
         }
         inpL = build_hc_post(cur, residual, attn_hc.post, attn_hc.comb, il);
