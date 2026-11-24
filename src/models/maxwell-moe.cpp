@@ -29,13 +29,35 @@ void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
         throw std::runtime_error("maxwell-moe: only 4 hyper-connection streams are supported");
     }
 
-    // block-sparse attention layout, not used by the dense graph
-    ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,    hparams.indexer_n_head,        false);
-    ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,    hparams.indexer_head_size,     false);
-    ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,         hparams.indexer_top_k,         false);
-    ml.get_key(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,    hparams.indexer_block_size,    false);
-    ml.get_key(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS,  hparams.indexer_local_blocks,  false);
-    ml.get_key(LLM_KV_ATTENTION_INDEXER_PREFIX_BLOCKS, hparams.indexer_prefix_blocks, false);
+    // Maxwell backbone attention requires the learned block-sparse indexer.
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,    hparams.indexer_n_head);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,    hparams.indexer_head_size);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,         hparams.indexer_top_k);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,    hparams.indexer_block_size);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS,  hparams.indexer_local_blocks);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_PREFIX_BLOCKS, hparams.indexer_prefix_blocks);
+
+    if (hparams.indexer_n_head != hparams.n_head_kv()) {
+        throw std::runtime_error(format(
+                "maxwell-moe: indexer head count (%u) must match KV head count (%u)",
+                hparams.indexer_n_head, hparams.n_head_kv()));
+    }
+    if (hparams.indexer_head_size != hparams.n_embd_head_k()) {
+        throw std::runtime_error(format(
+                "maxwell-moe: indexer key length (%u) must match attention head size (%u)",
+                hparams.indexer_head_size, hparams.n_embd_head_k()));
+    }
+    if (hparams.indexer_block_size == 0 ||
+        hparams.indexer_top_k == 0 ||
+        hparams.indexer_local_blocks == 0 ||
+        hparams.indexer_prefix_blocks == 0) {
+        throw std::runtime_error("maxwell-moe: indexer block size, top-k, prefix blocks and local blocks must be > 0");
+    }
+    if (hparams.indexer_top_k > 32) {
+        throw std::runtime_error(format(
+                "maxwell-moe: indexer top-k (%u) exceeds the supported maximum of 32 remote blocks",
+                hparams.indexer_top_k));
+    }
 
     switch (hparams.n_layer()) {
         case 45: type = LLM_TYPE_35B_A3B; break;
@@ -78,13 +100,11 @@ void llama_model_maxwell_moe::load_arch_tensors(llama_model_loader &) {
         layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, 0);
         layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd_head_k}, 0);
 
-        // block-sparse indexer: one query head per KV group, one shared key head
-        if (n_idx_head > 0 && n_idx_dim > 0) {
-            layer.index_q_proj = create_tensor(tn(LLM_TENSOR_INDEXER_Q_PROJ, "weight", i), {n_embd, n_idx_head * n_idx_dim}, TENSOR_NOT_REQUIRED);
-            layer.index_k_proj = create_tensor(tn(LLM_TENSOR_INDEXER_K_PROJ, "weight", i), {n_embd, n_idx_dim}, TENSOR_NOT_REQUIRED);
-            layer.index_q_norm = create_tensor(tn(LLM_TENSOR_INDEXER_Q_NORM, "weight", i), {n_idx_dim}, TENSOR_NOT_REQUIRED);
-            layer.index_k_norm = create_tensor(tn(LLM_TENSOR_INDEXER_K_NORM, "weight", i), {n_idx_dim}, TENSOR_NOT_REQUIRED);
-        }
+        // The learned indexer is part of Maxwell's attention definition, not optional metadata.
+        layer.index_q_proj = create_tensor(tn(LLM_TENSOR_INDEXER_Q_PROJ, "weight", i), {n_embd, n_idx_head * n_idx_dim}, 0);
+        layer.index_k_proj = create_tensor(tn(LLM_TENSOR_INDEXER_K_PROJ, "weight", i), {n_embd, n_idx_dim}, 0);
+        layer.index_q_norm = create_tensor(tn(LLM_TENSOR_INDEXER_Q_NORM, "weight", i), {n_idx_dim}, 0);
+        layer.index_k_norm = create_tensor(tn(LLM_TENSOR_INDEXER_K_NORM, "weight", i), {n_idx_dim}, 0);
 
         layer.hc_attn_fn    = create_tensor(tn(LLM_TENSOR_HC_ATTN_FN,    "weight", i), {hc_dim, hc_mix_dim}, 0);
         layer.hc_attn_base  = create_tensor(tn(LLM_TENSOR_HC_ATTN_BASE,  "weight", i), {hc_mix_dim}, 0);
