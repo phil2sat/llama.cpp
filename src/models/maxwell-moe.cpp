@@ -380,7 +380,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
     ggml_tensor * inp = build_inp_embd(model.tok_embd);
     ggml_tensor * inp_pos = build_inp_pos();
 
-    auto * inp_attn = build_attn_inp_kv_msa(true);
+    auto * inp_attn = build_attn_inp_kv_msa(true, true);
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
