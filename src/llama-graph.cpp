@@ -773,6 +773,9 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
     if (indexer_pos_slot) {
         mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch);
     }
+    if (indexer_pos_valid) {
+        mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch);
+    }
     if (indexer_blocks) {
         mctx_msa->set_input_block_slots(indexer_blocks, ubatch, hparams.indexer_block_size);
     }
@@ -805,6 +808,8 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
         const int64_t n_blocks = mctx_msa->get_n_pos() / hparams.indexer_block_size;
         res &= indexer_pos_slot->ne[0] == mctx_msa->get_n_pos();
         res &= indexer_pos_slot->ne[1] == n_stream;
+        res &= indexer_pos_valid->ne[0] == mctx_msa->get_n_pos();
+        res &= indexer_pos_valid->ne[1] == n_stream;
         res &= indexer_blocks->ne[0] == hparams.indexer_block_size;
         res &= indexer_blocks->ne[1] == n_blocks;
         res &= indexer_blocks->ne[3] == n_stream;
@@ -4080,6 +4085,10 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
         inp->indexer_pos_slot = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_pos, n_stream);
         ggml_set_input(inp->indexer_pos_slot);
         ggml_set_name(inp->indexer_pos_slot, "indexer_pos_slot");
+
+        inp->indexer_pos_valid = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_pos, n_stream);
+        ggml_set_input(inp->indexer_pos_valid);
+        ggml_set_name(inp->indexer_pos_valid, "indexer_pos_valid");
 
         inp->indexer_blocks = ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, block_size, n_blocks, 1, n_stream);
         ggml_set_input(inp->indexer_blocks);
