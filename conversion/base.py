@@ -1769,15 +1769,25 @@ class ModelBase:
         if config is not None:
             return config
 
-        try:
-            # for security reason, we don't allow loading remote code by default
-            # if a model need remote code, we will fallback to config.json
-            config = AutoConfig.from_pretrained(dir_model, trust_remote_code=False).to_dict()
-        except Exception as e:
-            logger.warning(f"Failed to load model config from {dir_model}: {e}")
-            logger.warning("Trying to load config.json instead")
-            with open(dir_model / "config.json", "r", encoding="utf-8") as f:
-                config = json.load(f)
+        config_path = dir_model / "config.json"
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_json = json.load(f)
+
+        if config_json.get("model_type") == "maxwell_moe":
+            # Maxwell ships a custom AutoConfig mapping. Loading it with remote
+            # code disabled makes Transformers instantiate the generic config
+            # class and emit a misleading model_type mismatch warning.
+            # The converter only needs the declarative config values.
+            config = config_json
+        else:
+            try:
+                # for security reason, we don't allow loading remote code by default
+                # if a model need remote code, we will fallback to config.json
+                config = AutoConfig.from_pretrained(dir_model, trust_remote_code=False).to_dict()
+            except Exception as e:
+                logger.warning(f"Failed to load model config from {dir_model}: {e}")
+                logger.warning("Trying to load config.json instead")
+                config = config_json
         if "llm_config" in config:
             # rename for InternVL
             config["text_config"] = config["llm_config"]
