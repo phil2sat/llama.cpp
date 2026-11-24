@@ -1091,6 +1091,7 @@ static double check_draft_rollback(llama_model * model, const std::vector<llama_
 
 static bool moe_mandatory(const llm_arch arch) {
     switch (arch) {
+        case LLM_ARCH_MAXWELL_MOE:
         case LLM_ARCH_FLINT:
         case LLM_ARCH_ZAYA1:
         case LLM_ARCH_LLAMA4:
