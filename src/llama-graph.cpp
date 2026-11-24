@@ -770,6 +770,20 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
     if (self_k_idxs_idx) {
         mctx_msa->get_idx()->set_input_k_idxs(self_k_idxs_idx, ubatch);
     }
+    if (indexer_pos_slot) {
+        mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch);
+    }
+    if (indexer_blocks) {
+        mctx_msa->set_input_block_slots(indexer_blocks, ubatch, hparams.indexer_block_size);
+    }
+    if (indexer_extra) {
+        mctx_msa->set_input_prefix_local_slots(indexer_extra, ubatch,
+                hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
+    }
+    if (indexer_remote_mask) {
+        mctx_msa->set_input_remote_block_mask(indexer_remote_mask, ubatch,
+                hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
+    }
 }
 
 bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
@@ -783,6 +797,23 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
     res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;
     if (self_k_idxs_idx) {
         res &= self_k_idxs_idx->ne[0] == params.ubatch.n_tokens;
+    }
+
+    if (indexer_pos_slot) {
+        const int64_t n_stream = params.cparams.kv_unified ? 1 : params.ubatch.n_seqs_unq;
+        const int64_t n_tps = params.ubatch.n_tokens / n_stream;
+        const int64_t n_blocks = mctx_msa->get_n_pos() / hparams.indexer_block_size;
+        res &= indexer_pos_slot->ne[0] == mctx_msa->get_n_pos();
+        res &= indexer_pos_slot->ne[1] == n_stream;
+        res &= indexer_blocks->ne[0] == hparams.indexer_block_size;
+        res &= indexer_blocks->ne[1] == n_blocks;
+        res &= indexer_blocks->ne[3] == n_stream;
+        res &= indexer_extra->ne[0] == (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)*hparams.indexer_block_size;
+        res &= indexer_extra->ne[1] == n_tps;
+        res &= indexer_extra->ne[3] == n_stream;
+        res &= indexer_remote_mask->ne[0] == n_blocks;
+        res &= indexer_remote_mask->ne[1] == n_tps;
+        res &= indexer_remote_mask->ne[3] == n_stream;
     }
 
     res &= can_reuse_attn_mask(self_attn_mask, this->mctx, params.ubatch, params.cparams);
@@ -4034,6 +4065,29 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
 
     if (msa_enabled) {
         inp->self_k_idxs_idx = mctx_idx->build_input_k_idxs(ctx0, ubatch);
+
+        const int64_t n_pos = mctx_cur->get_n_pos();
+        const int64_t n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;
+        const int64_t n_tps = ubatch.n_tokens / n_stream;
+        const int64_t block_size = hparams.indexer_block_size;
+        const int64_t n_blocks = n_pos / block_size;
+        const int64_t n_extra = (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)*block_size;
+
+        inp->indexer_pos_slot = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_pos, n_stream);
+        ggml_set_input(inp->indexer_pos_slot);
+        ggml_set_name(inp->indexer_pos_slot, "indexer_pos_slot");
+
+        inp->indexer_blocks = ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, block_size, n_blocks, 1, n_stream);
+        ggml_set_input(inp->indexer_blocks);
+        ggml_set_name(inp->indexer_blocks, "indexer_blocks");
+
+        inp->indexer_extra = ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, n_extra, n_tps, 1, n_stream);
+        ggml_set_input(inp->indexer_extra);
+        ggml_set_name(inp->indexer_extra, "indexer_extra");
+
+        inp->indexer_remote_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_blocks, n_tps, 1, n_stream);
+        ggml_set_input(inp->indexer_remote_mask);
+        ggml_set_name(inp->indexer_remote_mask, "indexer_remote_mask");
     }
 
     return (llm_graph_input_attn_kv_msa *) res->add_input(std::move(inp));
