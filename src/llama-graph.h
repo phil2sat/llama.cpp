@@ -1418,7 +1418,7 @@ struct llm_graph_context {
 
     llm_graph_input_attn_k_dsa_iswa * build_attn_inp_k_dsa_iswa() const;
 
-    llm_graph_input_attn_kv_msa * build_attn_inp_kv_msa(bool msa_enabled) const;
+    llm_graph_input_attn_kv_msa * build_attn_inp_kv_msa(bool msa_enabled, bool force_per_stream = false) const;
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_k_dsa * inp,
