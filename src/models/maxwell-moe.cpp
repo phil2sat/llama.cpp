@@ -465,6 +465,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                 key_start*indexer_k_stream->nb[1]);
 
                         ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
+                        ggml_prec_set_acc(token_scores, GGML_PREC_F32);
                         token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
                         token_scores = ggml_scale(ctx0, token_scores,
                                 1.0f/sqrtf(float(hparams.indexer_head_size)));
@@ -477,8 +478,9 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                 key_start*indexer_valid_stream->nb[0]);
                         token_scores = ggml_add(ctx0, token_scores, valid_chunk);
 
-                        ggml_tensor * pooled = ggml_pool_1d(ctx0, token_scores, GGML_OP_POOL_MAX,
-                                hparams.indexer_block_size, hparams.indexer_block_size, 0);
+                        ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
+                                hparams.indexer_block_size, 1,
+                                hparams.indexer_block_size, 1, 0, 0);
                         cb(pooled, "indexer_block_scores", il);
 
                         block_scores = block_scores
