@@ -682,6 +682,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
     // Preserve the four residual streams for the Maxwell MTP draft head.
     res->t_h_nextn = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_outputs);
     cb(res->t_h_nextn, "h_nextn", -1);
+    inpL = ggml_reshape_3d(ctx0, res->t_h_nextn, n_embd, hc, n_outputs);
 
     cur = build_hc_head(inpL, model.hc_head_fn, model.hc_head_scale, model.hc_head_base);
     cb(cur, "hc_head", -1);
