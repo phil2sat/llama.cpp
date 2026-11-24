@@ -189,7 +189,6 @@ class MaxwellMoeModel(TextModel):
         self.gguf_writer.add_expert_shared_feed_forward_length(hparams["shared_expert_intermediate_size"])
         self.gguf_writer.add_expert_shared_count(1)
         # sigmoid scores, expert_bias only for the selection, the chosen scores renormalized
-        self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
         self.gguf_writer.add_expert_weights_norm(True)
         self.gguf_writer.add_expert_weights_scale(1.0)
 
