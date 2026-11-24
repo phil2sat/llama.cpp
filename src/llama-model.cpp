@@ -3304,29 +3304,53 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
             } break;
         case LLM_ARCH_MAXWELL_MOE:
             {
-                // MSA routing requires one independently mapped cache stream per sequence.
-                const llama_kv_cache::layer_filter_cb filter_idx =
-                    [&](uint32_t il) { return il < hparams.n_layer(); };
+                if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && hparams.n_layer_nextn > 0) {
+                    // The Maxwell MTP decoder uses dense GQA and owns only the appended MTP KV layer.
+                    const llama_kv_cache::layer_filter_cb filter =
+                        [&](uint32_t il) { return il >= hparams.n_layer(); };
 
-                if (cparams.kv_unified) {
-                    LLAMA_LOG_WARN("%s: --kv-unified is not supported for Maxwell MSA; using per-sequence KV streams\n", __func__);
+                    res = new llama_kv_cache(
+                            *this,
+                            params.no_alloc,
+                            hparams,
+                            params.type_k,
+                            params.type_v,
+                            !cparams.flash_attn,
+                            cparams.offload_kqv,
+                            cparams.kv_unified,
+                            cparams.n_ctx_seq,
+                            cparams.n_seq_max,
+                            hparams.n_swa,
+                            hparams.swa_type,
+                            nullptr,
+                            filter,
+                            nullptr,
+                            nullptr);
+                } else {
+                    // The backbone uses MSA and requires one independently mapped cache stream per sequence.
+                    const llama_kv_cache::layer_filter_cb filter_idx =
+                        [&](uint32_t il) { return il < hparams.n_layer(); };
+
+                    if (cparams.kv_unified) {
+                        LLAMA_LOG_WARN("%s: --kv-unified is not supported for Maxwell MSA; using per-sequence KV streams\n", __func__);
+                    }
+
+                    res = new llama_kv_cache_msa(
+                            *this,
+                            params.no_alloc,
+                            params.type_k,
+                            params.type_v,
+                            !cparams.flash_attn,
+                            cparams.offload_kqv,
+                            false,
+                            cparams.n_ctx_seq,
+                            cparams.n_seq_max,
+                            hparams.n_swa,
+                            hparams.swa_type,
+                            nullptr,
+                            filter_idx,
+                            nullptr);
                 }
-
-                res = new llama_kv_cache_msa(
-                        *this,
-                        params.no_alloc,
-                        params.type_k,
-                        params.type_v,
-                        !cparams.flash_attn,
-                        cparams.offload_kqv,
-                        false,
-                        cparams.n_ctx_seq,
-                        cparams.n_seq_max,
-                        hparams.n_swa,
-                        hparams.swa_type,
-                        nullptr,
-                        filter_idx,
-                        nullptr);
             } break;
         case LLM_ARCH_HY_V4:
             {
@@ -3817,6 +3841,10 @@ int32_t llama_model_n_embd_inp(const llama_model * model) {
 
 int32_t llama_model_n_embd_out(const llama_model * model) {
     return model->hparams.n_embd_out();
+}
+
+int32_t llama_model_n_embd_nextn(const llama_model * model) {
+    return model->hparams.n_embd_nextn();
 }
 
 int32_t llama_model_n_layer(const llama_model * model) {
