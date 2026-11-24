@@ -605,8 +605,9 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                     GGML_ASSERT(n_head % n_head_kv == 0);
                     GGML_ASSERT(sparse_mask->ne[2] == n_head_kv);
 
-                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
-                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
+                    // Match the MSA Flash Attention layout: [head_dim, kv_tokens, 1, kv_heads].
+                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 2, 3, 1);
+                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 2, 3, 1);
                     // Flash Attention requires an F16 mask; top-k masking produces F32.
                     ggml_tensor * mask_fa = ggml_cast(ctx0,
                             ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2), GGML_TYPE_F16);
