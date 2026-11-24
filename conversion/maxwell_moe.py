@@ -220,6 +220,21 @@ class MaxwellMoeModel(TextModel):
             return gguf.GGMLQuantizationType.F32
         return super().tensor_force_quant(name, new_name, bid, n_dims)
 
+    @staticmethod
+    def _checked_tensor_names(
+        tensors: Iterable[tuple[str, Tensor]],
+        source_name: str,
+    ) -> Iterable[tuple[str, Tensor]]:
+        # GGUF stores tensor names in a fixed 64-byte field, including the null terminator.
+        for tensor_name, tensor_data in tensors:
+            name_size = len(tensor_name.encode("utf-8"))
+            if name_size >= 64:
+                raise ValueError(
+                    f"MaxwellMoe: tensor name {tensor_name!r} generated from "
+                    f"{source_name!r} is {name_size} bytes; GGUF allows at most 63"
+                )
+            yield tensor_name, tensor_data
+
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         if name.find("block_sparse_moe.experts.") != -1:
             n_experts = self.hparams["num_experts"]
@@ -236,7 +251,7 @@ class MaxwellMoeModel(TextModel):
                 datas = [self._experts[bid].pop(f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight")
                          for xid in range(n_experts)]
                 merged = f"model.layers.{bid}.block_sparse_moe.experts.{wid}.weight"
-                yield from super().modify_tensors(torch.stack(datas, dim=0), merged, bid)
+                yield from self._checked_tensor_names(\n                    super().modify_tensors(torch.stack(datas, dim=0), merged, bid), merged\n                )
             return
 
         if name.endswith(".block_sparse_moe.expert_bias"):
@@ -267,7 +282,7 @@ class MaxwellMoeModel(TextModel):
         if name in ("model.hc_head.hc_head_fn", "model.hc_head.hc_head_base", "model.hc_head.hc_head_scale"):
             name += ".weight"
 
-        yield from super().modify_tensors(data_torch, name, bid)
+        yield from self._checked_tensor_names(super().modify_tensors(data_torch, name, bid), name)
 
     def prepare_tensors(self):
         super().prepare_tensors()
