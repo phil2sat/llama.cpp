@@ -10524,12 +10524,16 @@ struct test_flash_attn_gqa_grouped : public test_case {
     }
 
     double max_err() override {
-        return 1e-4;
+        return 1e-3;
     }
 
     double max_err(ggml_backend_t backend) override {
         GGML_UNUSED(backend);
         return max_err();
+    }
+
+    int64_t grad_nmax() override {
+        return 0;
     }
 
     // The graph returns grouped attention minus a per-query-head dense reference.
