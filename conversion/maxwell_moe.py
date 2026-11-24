@@ -91,7 +91,7 @@ class MaxwellMoeModel(TextModel):
                 "hc_head.hc_head_base", "hc_head.hc_head_scale",
             }
             for mtp_idx in range(type(self)._opt_num_mtp_layers):
-                expected = decoder_names | root_names
+                expected = {f"decoder_layer.{name}" for name in decoder_names} | root_names
                 actual = type(self)._mtp_source_names.get(mtp_idx, set())
                 missing = sorted(expected - actual)
                 unexpected = sorted(actual - expected)
