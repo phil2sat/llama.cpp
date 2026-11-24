@@ -2916,6 +2916,29 @@ uint32_t llama_context::graph_max_nodes() const {
         res += 32u*model.hparams.n_layer_all;
     }
 
+    // Maxwell builds one block-indexing subgraph per query chunk, KV group, and key chunk.
+    // These nodes are not represented by the generic per-tensor estimate above.
+    if (model.arch == LLM_ARCH_MAXWELL_MOE) {
+        constexpr uint64_t query_chunk_size = 64;
+        constexpr uint64_t key_chunk_size = 8192;
+        constexpr uint64_t nodes_per_key_chunk = 8;
+
+        const uint64_t n_query_chunks =
+            (cparams.n_ubatch + query_chunk_size - 1) / query_chunk_size;
+        const uint64_t n_key_chunks =
+            (cparams.n_ctx_seq + key_chunk_size - 1) / key_chunk_size;
+        const uint64_t n_groups = model.hparams.n_head_kv();
+
+        const uint64_t maxwell_nodes =
+            uint64_t(model.hparams.n_layer_all) *
+            n_query_chunks *
+            n_key_chunks *
+            n_groups *
+            nodes_per_key_chunk;
+
+        res += (uint32_t) std::min<uint64_t>(maxwell_nodes, UINT32_MAX - res);
+    }
+
     // every sampler builds n_outputs_max_per_seq chains, see llm_graph_context::build_sampling
     for (const auto & [seq_id, sampler] : sampling.samplers) {
         res += llama_sampler_backend_n_nodes(sampler) * cparams.n_outputs_max_per_seq;
