@@ -1,4 +1,5 @@
 #include "models.h"
+#include "llama-kv-cache-msa.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -325,7 +326,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
     ggml_tensor * inp = build_inp_embd(model.tok_embd);
     ggml_tensor * inp_pos = build_inp_pos();
 
-    auto * inp_attn = build_attn_inp_kv();
+    auto * inp_attn = build_attn_inp_kv_msa(true);
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
@@ -366,6 +367,25 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             cb(Qcur, "Qcur", il);
             cb(Kcur, "Kcur", il);
             cb(Vcur, "Vcur", il);
+
+            // Project and cache the shared post-RoPE indexer keys. The indexer cache
+            // is kept in lockstep with the ordinary GQA K/V cache by llama_kv_cache_msa.
+            ggml_tensor * indexer_q = build_lora_mm(layer.index_q_proj, cur);
+            indexer_q = ggml_reshape_3d(ctx0, indexer_q, hparams.indexer_head_size,
+                    hparams.indexer_n_head, n_tokens);
+            indexer_q = build_norm(indexer_q, layer.index_q_norm, nullptr, LLM_NORM_RMS, il);
+            indexer_q = build_rope_indexer(indexer_q, inp_pos, il);
+            cb(indexer_q, "indexer_q", il);
+
+            ggml_tensor * indexer_k = build_lora_mm(layer.index_k_proj, cur);
+            indexer_k = build_norm(indexer_k, layer.index_k_norm, nullptr, LLM_NORM_RMS, il);
+            indexer_k = ggml_reshape_3d(ctx0, indexer_k, hparams.indexer_head_size, 1, n_tokens);
+            indexer_k = build_rope_indexer(indexer_k, inp_pos, il);
+            cb(indexer_k, "indexer_k", il);
+
+            const auto * mctx_idx = inp_attn->mctx_msa->get_idx();
+            ggml_build_forward_expand(gf, mctx_idx->cpy_k(
+                    ctx0, indexer_k, inp_attn->get_k_idxs_idx(), il));
 
             cur = build_attn(inp_attn,
                     layer.wo, layer.wo_b, layer.wo_s,
