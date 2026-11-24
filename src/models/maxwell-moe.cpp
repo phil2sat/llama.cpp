@@ -607,7 +607,9 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
                     ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
                     ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
-                    ggml_tensor * mask_fa = ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2);
+                    // Flash Attention requires an F16 mask; top-k masking produces F32.
+                    ggml_tensor * mask_fa = ggml_cast(ctx0,
+                            ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2), GGML_TYPE_F16);
 
                     ggml_tensor * attn_chunk = build_attn_msa_fa(
                             q_chunk, k_fa, v_fa, mask_fa, gqa_group_size, kq_scale, il);
