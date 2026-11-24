@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Callable, Iterable, TYPE_CHECKING
+import re
 
 import torch
 
@@ -24,6 +25,28 @@ class MaxwellMoeModel(TextModel):
     _original_block_count: int | None = None
     _opt_num_mtp_layers: int = 0
     _mtp_proj_generators: dict[int, dict[str, Callable[[], Tensor]]] = {}
+
+    # Maxwell checkpoints use a dedicated MTP namespace. Keep its accepted
+    # tensor inventory explicit so an unsupported checkpoint revision cannot
+    # silently produce a partially loadable draft model.
+    _MTP_ROOT_TENSORS = {
+        "enorm.weight": "model.layers.{bid}.enorm.weight",
+        "hnorm.weight": "model.layers.{bid}.hnorm.weight",
+        "final_layernorm.weight": "model.norm.weight",
+        "hc_head.hc_head_fn": "model.hc_head.hc_head_fn",
+        "hc_head.hc_head_base": "model.hc_head.hc_head_base",
+        "hc_head.hc_head_scale": "model.hc_head.hc_head_scale",
+    }
+    _MTP_DECODER_TENSOR_RE = re.compile(
+        r"^(?:"
+        r"input_layernorm\\.weight|post_attention_layernorm\\.weight|"
+        r"self_attn\\.(?:[qkvo]_proj\\.weight|[qk]_layernorm\\.weight)|"
+        r"self_attn_hyper_connection\\.(?:alpha_(?:pre|post|res)|bias|mapping_proj\\.weight)|"
+        r"mlp_hyper_connection\\.(?:alpha_(?:pre|post|res)|bias|mapping_proj\\.weight)|"
+        r"block_sparse_moe\\.(?:gate\\.weight|expert_bias|shared_expert\\.w[123]\\.weight|"
+        r"experts\\.\\d+\\.w[123]\\.weight)"
+        r")$"
+    )
 
     def index_tensors(self, remote_hf_model_id: str | None = None):
         if self.mtp_only and self.no_mtp:
@@ -166,20 +189,21 @@ class MaxwellMoeModel(TextModel):
             if cls._original_block_count is None:
                 raise ValueError("MaxwellMoe: MTP layer count was not initialized")
 
-            parts = name.split(".", 3)
-            if len(parts) < 3 or not parts[1].isdecimal():
+            parts = name.split(".", 2)
+            if len(parts) != 3 or not parts[1].isdecimal():
                 raise ValueError(f"MaxwellMoe: unsupported MTP tensor name {name!r}")
 
             mtp_idx = int(parts[1])
             bid = cls._original_block_count + mtp_idx
-            rest = parts[2] + (f".{parts[3]}" if len(parts) == 4 else "")
+            rest = parts[2]
             cls._opt_num_mtp_layers = max(cls._opt_num_mtp_layers, mtp_idx + 1)
 
             if rest.startswith("decoder_layer."):
-                name = f"model.layers.{bid}.{rest[len('decoder_layer.'):]}"
-            elif rest.startswith(("enorm.", "hnorm.")):
-                name = f"model.layers.{bid}.{rest}"
-            elif rest.startswith(("e_proj.", "h_proj.")):
+                decoder_tensor = rest[len("decoder_layer."):]
+                if cls._MTP_DECODER_TENSOR_RE.fullmatch(decoder_tensor) is None:
+                    raise ValueError(f"MaxwellMoe: unsupported MTP decoder tensor {name!r}")
+                name = f"model.layers.{bid}.{decoder_tensor}"
+            elif rest in ("e_proj.weight", "h_proj.weight"):
                 projection = rest.split(".", 1)[0]
                 projections = cls._mtp_proj_generators.setdefault(bid, {})
                 if projection in projections:
@@ -189,20 +213,25 @@ class MaxwellMoeModel(TextModel):
                     return None
                 if set(projections) != {"e_proj", "h_proj"}:
                     raise ValueError(f"MaxwellMoe: invalid MTP projection pair for layer {mtp_idx}")
+
                 e_gen = projections.pop("e_proj")
                 h_gen = projections.pop("h_proj")
-                if not projections:
-                    del cls._mtp_proj_generators[bid]
+                del cls._mtp_proj_generators[bid]
                 name = f"model.layers.{bid}.eh_proj.weight"
 
                 def gen_mtp_eh_proj() -> Tensor:
-                    return torch.cat((e_gen(), h_gen()), dim=0)
+                    e_weight = e_gen()
+                    h_weight = h_gen()
+                    if e_weight.ndim != 2 or h_weight.ndim != 2 or e_weight.shape != h_weight.shape:
+                        raise ValueError(
+                            "MaxwellMoe: e_proj and h_proj must be matching 2-D matrices; "
+                            f"got {tuple(e_weight.shape)} and {tuple(h_weight.shape)}"
+                        )
+                    return torch.cat((e_weight, h_weight), dim=0)
 
                 gen = gen_mtp_eh_proj
-            elif rest.startswith("final_layernorm."):
-                name = f"model.norm.{rest[len('final_layernorm.'):]}"
-            elif rest.startswith("hc_head."):
-                name = f"model.{rest}"
+            elif rest in cls._MTP_ROOT_TENSORS:
+                name = cls._MTP_ROOT_TENSORS[rest].format(bid=bid)
             else:
                 raise ValueError(f"MaxwellMoe: unsupported MTP tensor {name!r}")
 
