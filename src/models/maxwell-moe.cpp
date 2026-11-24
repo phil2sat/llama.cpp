@@ -617,7 +617,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                     cb(attn_fa, "attn_sparse_fa", il);
 
                     // [D, query_count, n_kv_heads, group_size] -> [D, n_heads, query_count].
-                    attn_chunk = ggml_permute(ctx0, attn_fa, 0, 1, 3, 2);
+                    ggml_tensor * attn_chunk = ggml_permute(ctx0, attn_fa, 0, 1, 3, 2);
                     if (!ggml_is_contiguous(attn_chunk)) {
                         attn_chunk = ggml_cont(ctx0, attn_chunk);
                     }
