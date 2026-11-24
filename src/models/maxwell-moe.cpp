@@ -370,13 +370,6 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
             // Project and cache the shared post-RoPE indexer keys. The indexer cache
             // is kept in lockstep with the ordinary GQA K/V cache by llama_kv_cache_msa.
-            ggml_tensor * indexer_q = build_lora_mm(layer.index_q_proj, cur);
-            indexer_q = ggml_reshape_3d(ctx0, indexer_q, hparams.indexer_head_size,
-                    hparams.indexer_n_head, n_tokens);
-            indexer_q = build_norm(indexer_q, layer.index_q_norm, nullptr, LLM_NORM_RMS, il);
-            indexer_q = build_rope_indexer(indexer_q, inp_pos, il);
-            cb(indexer_q, "indexer_q", il);
-
             ggml_tensor * indexer_k = build_lora_mm(layer.index_k_proj, cur);
             indexer_k = build_norm(indexer_k, layer.index_k_norm, nullptr, LLM_NORM_RMS, il);
             indexer_k = ggml_reshape_3d(ctx0, indexer_k, hparams.indexer_head_size, 1, n_tokens);
