@@ -1,6 +1,7 @@
 #include "models.h"
 #include "llama-kv-cache-msa.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -9,9 +10,10 @@
 // (4 residual streams, Sinkhorn-constrained mixing, learned stream collapse before the head).
 //
 // The reference attention is block-sparse GQA (MBSA): per KV group, 8 prefix + 8 local 128-token blocks plus
-// 16 remote blocks picked by a learned indexer. Up to 4096 tokens every block is selected, so it equals dense
-// attention; the vendor's serving stack runs dense attention for query positions below 16K. This graph runs
-// dense attention at every position. The indexer weights and the block layout are loaded for a sparse path.
+// 16 remote blocks selected by block-max scores from the learned indexer. The graph builds that route in
+// bounded query/key chunks and applies its group-specific mask to the standard GQA attention operation.
+// The mask is sparse, but the current attention backend still evaluates the full KV axis; KV-row execution
+// is a separate optimization.
 
 void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,        hparams.f_norm_rms_eps);
