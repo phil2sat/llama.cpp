@@ -1483,6 +1483,14 @@ struct llama_model_xing4_0 : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
     uint32_t graph_nodes_per_tensor() const override { return 32; }
+    uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_ctx_seq) const override {
+        constexpr uint64_t query_chunk_size = 64;
+        constexpr uint64_t key_chunk_size = 8192;
+        constexpr uint64_t nodes_per_key_chunk = 8;
+        const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1) / query_chunk_size;
+        const uint64_t n_key_chunks = (n_ctx_seq + key_chunk_size - 1) / key_chunk_size;
+        return uint64_t(hparams.n_layer_all) * n_query_chunks * n_key_chunks * hparams.n_head_kv() * nodes_per_key_chunk;
+    }
 
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
