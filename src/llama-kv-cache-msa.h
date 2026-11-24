@@ -129,7 +129,7 @@ public:
     uint32_t get_n_pos() const;
     uint32_t get_n_pos(const llama_ubatch * ubatch) const;
 
-    // position <-> cell translation maps, populated from the base cache cells
+    // Position-to-cell maps use the matching base or indexer cache slot map.
     // the model graph relates cache contents to token positions only through these per ubatch inputs
     // value for empty or other-sequence cells is 0 so consumers must mask them
     void set_input_cell_pos(ggml_tensor * dst, const llama_ubatch * ubatch, int32_t div) const;
