@@ -983,7 +983,7 @@ kernel void kernel_top_k_mask(
         }
         if (FC_top_k_mask_has_blocks) {
             FOR_UNROLL (int k = 0; k < args.n_blk; ++k) {
-                const int32_t c = *(device const int32_t *) (blocks + k*args.nbb0 + p*args.nbb1);
+                const int32_t c = *(device const int32_t *) (blocks + k*args.nbb0 + p*args.nbb1 + i2*args.nbb2 + i3*args.nbb3);
                 if (c >= 0 && c < args.n_kv) {
                     dst_row_t[c] = mask_row_t[c];
                 }
