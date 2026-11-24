@@ -25,6 +25,7 @@ layout(push_constant) uniform parameter
     uint m1; uint m2; uint m3;
     uint nbm1; uint nbm2; uint nbm3;
     uint nbd1; uint nbd2; uint nbd3;
+    uint nbb1; uint nbb2; uint nbb3;
 
     uint m_offset;
     uint k_offset;
@@ -88,8 +89,9 @@ void main() {
             keep(p, m_row, d_row);
             continue;
         }
+        const uint b_row = b_offset + i2*nbb2 + i3*nbb3 + uint(p)*nbb1;
         for (uint k = 0; k < n_blk; ++k) {
-            keep(data_b[b_offset + uint(p)*n_blk + k], m_row, d_row);
+            keep(data_b[b_row + k], m_row, d_row);
         }
     }
 }
