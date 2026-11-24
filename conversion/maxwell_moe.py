@@ -39,12 +39,12 @@ class MaxwellMoeModel(TextModel):
     }
     _MTP_DECODER_TENSOR_RE = re.compile(
         r"^(?:"
-        r"input_layernorm\\.weight|post_attention_layernorm\\.weight|"
-        r"self_attn\\.(?:[qkvo]_proj\\.weight|[qk]_layernorm\\.weight)|"
-        r"self_attn_hyper_connection\\.(?:alpha_(?:pre|post|res)|bias|mapping_proj\\.weight)|"
-        r"mlp_hyper_connection\\.(?:alpha_(?:pre|post|res)|bias|mapping_proj\\.weight)|"
-        r"block_sparse_moe\\.(?:gate\\.weight|expert_bias|shared_expert\\.w[123]\\.weight|"
-        r"experts\\.\\d+\\.w[123]\\.weight)"
+        r"input_layernorm\.weight|post_attention_layernorm\.weight|"
+        r"self_attn\.(?:[qkvo]_proj\.weight|[qk]_layernorm\.weight)|"
+        r"self_attn_hyper_connection\.(?:alpha_(?:pre|post|res)|bias|mapping_proj\.weight)|"
+        r"mlp_hyper_connection\.(?:alpha_(?:pre|post|res)|bias|mapping_proj\.weight)|"
+        r"block_sparse_moe\.(?:gate\.weight|expert_bias|shared_expert\.w[123]\.weight|"
+        r"experts\.\d+\.w[123]\.weight)"
         r")$"
     )
 
