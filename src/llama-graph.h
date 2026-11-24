@@ -1344,6 +1344,15 @@ struct llm_graph_context {
     // attention
     //
 
+    // Shared grouped Flash Attention path for block-sparse GQA models.
+    // q_cur: [D, HQ, T], k/v: [D, n_keys, 1, C], mask: [n_keys, R, 1, C].
+    ggml_tensor * build_attn_msa_fa(
+            ggml_tensor * q_cur,
+            ggml_tensor * k,
+            ggml_tensor * v,
+            ggml_tensor * mask,
+            int64_t Gp, float kq_scale, int il) const;
+
     ggml_tensor * build_attn_mha(
             ggml_tensor * q,       // [n_embd_head_q, n_head_q, n_tokens]
             ggml_tensor * k,       // [n_embd_head_k, n_head_k, n_tokens]
