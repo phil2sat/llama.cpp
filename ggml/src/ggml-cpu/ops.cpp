@@ -11914,13 +11914,20 @@ void ggml_compute_forward_top_k_mask(
                 keep(p);
                 continue;
             }
+            const int64_t ib2 = i2 % blocks->ne[2];
+            const int64_t ib3 = i3 % blocks->ne[3];
             for (int64_t k = 0; k < n_blk; ++k) {
-                keep(*(const int32_t *) ((const char *) blocks->data + k*blocks->nb[0] + p*blocks->nb[1]));
+                keep(*(const int32_t *) ((const char *) blocks->data
+                        + k*blocks->nb[0] + p*blocks->nb[1]
+                        + ib2*blocks->nb[2] + ib3*blocks->nb[3]));
             }
         }
 
         if (extra) {
-            const char * extra_row = (const char *) extra->data + i1*extra->nb[1] + i2*extra->nb[2] + i3*extra->nb[3];
+            const char * extra_row = (const char *) extra->data
+                + (i1 % extra->ne[1])*extra->nb[1]
+                + (i2 % extra->ne[2])*extra->nb[2]
+                + (i3 % extra->ne[3])*extra->nb[3];
             for (int64_t j = 0; j < n_extra; ++j) {
                 keep(*(const int32_t *) (extra_row + j*extra->nb[0]));
             }
