@@ -463,7 +463,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
         ms.add_kv(LLM_KV_ROPE_FREQ_BASE_SPATIAL, 10000.0f);
     }
 
-    if (arch == LLM_ARCH_XING4_0) {
+    if (arch == LLM_ARCH_XING4_0 || arch == LLM_ARCH_MAXWELL_MOE) {
         // Manifold-Constrained Hyper-Connections (MHC) multi-residual-stream blocks
         ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,               uint32_t(4));
         ms.add_kv(LLM_KV_HYPER_CONNECTION_SINKHORN_ITERATIONS, uint32_t(20));
@@ -568,7 +568,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
     }
 
     // minimax-m3 keeps one indexer head per GQA head; the rest use a fixed 64 to match the fused
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   arch == LLM_ARCH_MINIMAX_M3 ? n_head : uint32_t(64));
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,
+              arch == LLM_ARCH_MINIMAX_M3 || arch == LLM_ARCH_MAXWELL_MOE ? n_head_kv : uint32_t(64));
     // qwen4exp ropes indexer keys with the main rotary width, so its head can't be < n_rot
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,
               arch == LLM_ARCH_QWEN4EXP ? n_embd_head : uint32_t(128));
@@ -582,6 +583,9 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const 
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_KPOOL,        uint32_t(4));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, true);
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS, uint32_t(1));
+    if (arch == LLM_ARCH_MAXWELL_MOE) {
+        ms.add_kv(LLM_KV_ATTENTION_INDEXER_PREFIX_BLOCKS, uint32_t(1));
+    }
     // mrope sections count rope pairs; Ling 3.0 VL files carry [t, h, w] sections
     // summing to n_rot / 2 (n_rot is 64 in this fixture)
     if (arch == LLM_ARCH_BAILINGMOE3) {
