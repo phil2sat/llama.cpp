@@ -587,10 +587,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                     hparams.expert_weights_scale,
                     (llama_expert_gating_func_type) hparams.expert_gating_func,
                     il,
-                    nullptr, nullptr,
-                    layer.ffn_up_exps_s,
-                    layer.ffn_gate_exps_s,
-                    layer.ffn_down_exps_s);
+                    nullptr, nullptr, nullptr, nullptr, 0.0f);
             cb(moe_out, "ffn_moe_out", il);
 
             ggml_tensor * ffn_shexp = build_ffn(cur,
