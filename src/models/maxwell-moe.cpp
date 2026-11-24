@@ -396,7 +396,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             ggml_build_forward_expand(gf, mctx_idx->cpy_k(
                     ctx0, indexer_k, inp_attn->get_k_idxs_idx(), il));
 
-            const int64_t n_pos = inp_attn->mctx_msa->get_n_pos();
+            const int64_t n_pos = inp_attn->indexer_pos_slot->ne[0];
             const int64_t n_blocks = n_pos / hparams.indexer_block_size;
             const int64_t n_stream = ubatch.n_seqs_unq;
             const int64_t n_tokens_per_stream = n_tokens / n_stream;
