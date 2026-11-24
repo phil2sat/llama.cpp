@@ -2545,8 +2545,8 @@ extern "C" {
     // mask:   [n_kv,    m1,  m2,  m3]  f16 or f32, broadcast to the rows of top_k
     // top_k:  [n_top,   ne1, ne2, ne3] i32, picks of each row
     // score:  [n_pick,  ne1, ne2, ne3] f32, can be NULL: a pick is live when its score is above -inf, else every pick is live
-    // blocks: [n_blk,   n_pick]        i32, can be NULL: the member cells of each pick, else a pick is a cell
-    // extra:  [n_extra, ne1, ne2, ne3] i32, can be NULL: cells of each row kept without a pick
+    // blocks: [n_blk,   n_pick, 1|ne2, 1|ne3] i32, can be NULL: member cells of each pick, broadcast over rows
+    // extra:  [n_extra, 1|ne1, 1|ne2, 1|ne3] i32, can be NULL: cells of each row kept without a pick
     // res:    [n_kv,    ne1, ne2, ne3] same type as mask
     //
     // res[c, i] = mask[c, i % m] when c is a cell of a live pick of row i or an extra cell of row i, else -inf
