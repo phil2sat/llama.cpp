@@ -269,12 +269,23 @@ uint32_t llama_kv_cache_msa_context::get_n_pos() const {
         pos_max = std::max(pos_max, kv->seq_pos_max(seq_id));
     }
 
-    if (!ubatches.empty()) {
-        for (llama_pos pos : ubatches[i_next].pos) {
+    return std::max(n_pad, GGML_PAD((uint32_t) (pos_max + 1), n_pad));
+}
+
+uint32_t llama_kv_cache_msa_context::get_n_pos(const llama_ubatch * ubatch) const {
+    llama_pos pos_max = -1;
+
+    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) kv->get_n_seq_max(); ++seq_id) {
+        pos_max = std::max(pos_max, kv->seq_pos_max(seq_id));
+    }
+
+    if (ubatch != nullptr) {
+        for (llama_pos pos : ubatch->pos) {
             pos_max = std::max(pos_max, pos);
         }
     }
 
+    const uint32_t n_pad = 256;
     return std::max(n_pad, GGML_PAD((uint32_t) (pos_max + 1), n_pad));
 }
 
@@ -342,12 +353,13 @@ void llama_kv_cache_msa_context::set_input_pos_slot(
             map[p0] = (int32_t) j;
         }
 
-        const int64_t n_tps = n_tokens / n_stream_ub;
-        const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
-        for (int64_t t = 0; t < n_tps; ++t) {
-            const llama_pos pos = ubatch->pos[s*n_tps + t];
-            if (pos >= 0 && pos < n_pos) {
-                map[pos] = (int32_t) (token_slots[t] % kv->get_base()->get_size());
+        if (k_idxs != nullptr) {
+            const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
+            for (int64_t t = 0; t < n_tps; ++t) {
+                const llama_pos pos = ubatch->pos[s*n_tps + t];
+                if (pos >= 0 && pos < n_pos) {
+                    map[pos] = (int32_t) (token_slots[t] % kv->get_base()->get_size());
+                }
             }
         }
 
@@ -373,7 +385,7 @@ void llama_kv_cache_msa_context::set_input_pos_valid_mask(
     const int64_t n_stream = dst->ne[1];
     const int64_t n_tokens = ubatch->n_tokens;
 
-    GGML_ASSERT(n_pos == get_n_pos());
+    GGML_ASSERT(n_pos == get_n_pos(ubatch));
     GGML_ASSERT(n_tokens % n_stream == 0);
 
     const int64_t n_tps = n_tokens / n_stream;
@@ -419,7 +431,7 @@ void llama_kv_cache_msa_context::set_input_block_slots(
     GGML_ASSERT(dst->ne[0] == block_size);
     GGML_ASSERT(dst->ne[2] == 1);
     GGML_ASSERT(n_tokens % n_stream == 0);
-    GGML_ASSERT(n_blocks == get_n_pos() / block_size);
+    GGML_ASSERT(n_blocks == get_n_pos(ubatch) / block_size);
 
     const int64_t n_tps = n_tokens / n_stream;
     int32_t * data = (int32_t *) dst->data;
@@ -428,7 +440,7 @@ void llama_kv_cache_msa_context::set_input_block_slots(
     for (int64_t s = 0; s < n_stream; ++s) {
         const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
         const auto & cells = kv->get_base()->get_cells(seq_id);
-        std::vector<int32_t> pos_to_cell(get_n_pos(), -1);
+        std::vector<int32_t> pos_to_cell(get_n_pos(ubatch), -1);
 
         for (uint32_t j = 0; j < cells.size(); ++j) {
             if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
