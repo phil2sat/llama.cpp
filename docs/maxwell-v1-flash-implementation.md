@@ -80,6 +80,8 @@ Declares graph input/state structures used by graph construction and execution. 
 
 Implement the MSA KV-cache context used by Maxwell. This layer owns MSA-specific cache state and supplies cache/indexer context consumed by the graph. It is distinct from ordinary KV-cache handling because MSA needs indexer slot/block metadata in addition to normal K/V storage.
 
+The main-context cache is restricted to the 45 backbone layers; the appended MTP layer is allocated by the separate MTP context and must not be duplicated in the backbone cache. The indexer cache is key-only. The full-history backbone K/V allocation is intentional: Maxwell's inference design retains historical K/V and sparsifies which blocks participate in each attention operation. The 32-block budget (8 prefix, 8 local, up to 16 remote) is an attention-access budget, not a KV-retention or cache-capacity limit. Do not cap the backbone cache at the sparse attention budget; doing so would discard blocks that later indexer queries may select.
+
 ### src/llama-hparams.h and src/llama-hparams.cpp
 
 Declare and initialize model hyperparameters used by loading and graph construction, including dense-context/indexer settings. A new Maxwell metadata field must stay consistent across architecture key mapping, hyperparameters, writer, and converter.
