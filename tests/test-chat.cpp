@@ -9015,9 +9015,9 @@ static void test_msg_diffs_compute() {
 
 
 static void test_maxwell_chat_reasoning_content_tool_call() {
-    LOG_DBG("%s\\n", __func__);
+    LOG_DBG("%s\n", __func__);
 
-    // Exercise the chat-session contract used by Maxwell: reasoning, visible content, and a tool call.
+    // Verify the reasoning/content/tool-call parsing contract with an existing compatible chat template.
     auto tmpls = read_templates("models/templates/Qwen3.5-4B.jinja");
 
     common_chat_templates_inputs inputs;
@@ -9027,17 +9027,17 @@ static void test_maxwell_chat_reasoning_content_tool_call() {
 
     common_chat_session session(tmpls.get(), nullptr, inputs);
     session.feed(common_chat_input(
-        "Let me check.\\n</think>\\n\\nThe answer is 42.\\n"
-        "<tool_call>\\n<function=special_function>\\n"
-        "<parameter=arg1>\\n42\\n</parameter>\\n"
-        "</function>\\n</tool_call>"));
+        "Let me check.\n</think>\n\nThe answer is 42.\n"
+        "<tool_call>\n<function=special_function>\n"
+        "<parameter=arg1>\n42\n</parameter>\n"
+        "</function>\n</tool_call>"));
 
     const auto & msg = session.finish();
     assert_equals(std::string("Let me check."), msg.reasoning_content);
     assert_equals(std::string("The answer is 42."), msg.content);
     assert_equals(size_t(1), msg.tool_calls.size());
     assert_equals(std::string("special_function"), msg.tool_calls[0].name);
-    assert_equals(std::string("{\\"arg1\\":42}"), json::parse(msg.tool_calls[0].arguments).dump());
+    assert_equals(std::string("{\"arg1\":42}"), json::parse(msg.tool_calls[0].arguments).dump());
 }
 
 int main(int argc, char ** argv) {
