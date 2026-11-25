@@ -4147,6 +4147,12 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
         inp->indexer_remote_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_blocks, n_tps, 1, n_stream);
         ggml_set_input(inp->indexer_remote_mask);
         ggml_set_name(inp->indexer_remote_mask, "indexer_remote_mask");
+
+        if (hparams.indexer_dense_context > 0) {
+            inp->indexer_dense_gate = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, n_tps, 1, n_stream);
+            ggml_set_input(inp->indexer_dense_gate);
+            ggml_set_name(inp->indexer_dense_gate, "indexer_dense_gate");
+        }
     }
 
     return (llm_graph_input_attn_kv_msa *) res->add_input(std::move(inp));
