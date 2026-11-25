@@ -1,0 +1,162 @@
+From 383ed0a41d426dfd63738dc2c7fbccab4ac72b1f Mon Sep 17 00:00:00 2001
+From: phil2sat <phil2sat@gmail.com>
+Date: Wed, 25 Nov 2026 16:55:04 +0100
+Subject: [PATCH] maxwell : create input mask views once instead of per layer
+
+Views of host graph inputs become cross-backend split inputs, and the
+scheduler allocates one device copy per view. Recreating the per-chunk
+views of the attention mask, remote mask, extra and dense gate in every
+layer gave n_layer*n_query_chunks copies of [n_kv, query_chunk] masks
+(1080 x 8 MiB, ~8.4 GiB of the Vulkan compute buffer). Create each view
+once per graph and reuse it in all layers.
+
+Assisted-by: Claude Sonnet
+---
+ src/models/maxwell-moe.cpp | 106 +++++++++++++++++++++++--------------
+ 1 file changed, 67 insertions(+), 39 deletions(-)
+
+diff --git a/src/models/maxwell-moe.cpp b/src/models/maxwell-moe.cpp
+index 0aac79a..7928d4e 100644
+--- a/src/models/maxwell-moe.cpp
++++ b/src/models/maxwell-moe.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <map>
+ #include <stdexcept>
+ 
+ // Maxwell MoE (maxwell-model/Maxwell-V1-Flash): GQA with per-head QK-norm, leading dense FFN layers, then
+@@ -405,6 +406,18 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
+     inpL = ggml_repeat_4d(ctx0, inpL, n_embd, hc, n_tokens, 1);
+     cb(inpL, "hc_init", -1);
+ 
++    // Views of the graph inputs are identical in every layer, so they are created once. A view of a host input is a
++    // cross-backend split input: the scheduler allocates one device copy per view, i.e. per chunk and layer if the
++    // views are recreated in each layer (n_layer*n_query_chunks*[n_kv, query_chunk_size] copies of the mask).
++    struct msa_chunk_inputs {
++        ggml_tensor * remote_mask = nullptr;
++        ggml_tensor * base_mask   = nullptr;
++        ggml_tensor * extra       = nullptr;
++        ggml_tensor * gate        = nullptr;
++    };
++    std::map<std::pair<int64_t, int64_t>, msa_chunk_inputs> chunk_inputs;
++    std::map<int64_t, ggml_tensor *> stream_blocks;
++
+     for (int il = 0; il < n_layer; ++il) {
+         const auto & layer = model.layers[il];
+ 
+@@ -563,57 +576,72 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
+                                 : pooled;
+                     }
+ 
+-                    ggml_tensor * remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
+-                            n_blocks, query_count, 1, 1,
+-                            inp_attn->indexer_remote_mask->nb[1],
+-                            inp_attn->indexer_remote_mask->nb[2],
+-                            inp_attn->indexer_remote_mask->nb[3],
+-                            stream*inp_attn->indexer_remote_mask->nb[3]
+-                                + query_start*inp_attn->indexer_remote_mask->nb[1]);
++                    msa_chunk_inputs & ci = chunk_inputs[{stream, query_start}];
++                    if (!ci.base_mask) {
++                        ci.remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
++                                n_blocks, query_count, 1, 1,
++                                inp_attn->indexer_remote_mask->nb[1],
++                                inp_attn->indexer_remote_mask->nb[2],
++                                inp_attn->indexer_remote_mask->nb[3],
++                                stream*inp_attn->indexer_remote_mask->nb[3]
++                                    + query_start*inp_attn->indexer_remote_mask->nb[1]);
++
++                        ci.base_mask = ggml_view_4d(ctx0, inp_attn->self_attn_mask.raw,
++                                inp_attn->self_attn_mask.raw->ne[0], query_count, 1, 1,
++                                inp_attn->self_attn_mask.raw->nb[1],
++                                inp_attn->self_attn_mask.raw->nb[2],
++                                inp_attn->self_attn_mask.raw->nb[3],
++                                stream*inp_attn->self_attn_mask.raw->nb[3]
++                                    + query_start*inp_attn->self_attn_mask.raw->nb[1]);
++
++                        const int64_t n_extra_chunk =
++                                (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)
++                                * hparams.indexer_block_size;
++                        ci.extra = ggml_view_4d(ctx0, inp_attn->indexer_extra,
++                                n_extra_chunk, query_count, 1, 1,
++                                inp_attn->indexer_extra->nb[1],
++                                inp_attn->indexer_extra->nb[2],
++                                inp_attn->indexer_extra->nb[3],
++                                stream*inp_attn->indexer_extra->nb[3]
++                                    + query_start*inp_attn->indexer_extra->nb[1]);
++
++                        if (inp_attn->indexer_dense_gate) {
++                            ci.gate = ggml_view_4d(ctx0, inp_attn->indexer_dense_gate,
++                                    1, query_count, 1, 1,
++                                    inp_attn->indexer_dense_gate->nb[1],
++                                    inp_attn->indexer_dense_gate->nb[2],
++                                    inp_attn->indexer_dense_gate->nb[3],
++                                    stream*inp_attn->indexer_dense_gate->nb[3]
++                                        + query_start*inp_attn->indexer_dense_gate->nb[1]);
++                        }
++                    }
++                    ggml_tensor * remote_mask = ci.remote_mask;
+                     block_scores = ggml_add(ctx0, block_scores, remote_mask);
+                     cb(block_scores, "indexer_remote_scores", il);
+ 
+                     ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, block_scores, n_top_k));
+                     cb(top_k, "indexer_top_k", il);
+ 
+-                    ggml_tensor * base_mask = ggml_view_4d(ctx0, inp_attn->self_attn_mask.raw,
+-                            inp_attn->self_attn_mask.raw->ne[0], query_count, 1, 1,
+-                            inp_attn->self_attn_mask.raw->nb[1],
+-                            inp_attn->self_attn_mask.raw->nb[2],
+-                            inp_attn->self_attn_mask.raw->nb[3],
+-                            stream*inp_attn->self_attn_mask.raw->nb[3]
+-                                + query_start*inp_attn->self_attn_mask.raw->nb[1]);
+-
+-                    ggml_tensor * blocks = ggml_view_4d(ctx0, inp_attn->indexer_blocks,
+-                            hparams.indexer_block_size, n_blocks, 1, 1,
+-                            inp_attn->indexer_blocks->nb[1],
+-                            inp_attn->indexer_blocks->nb[2],
+-                            inp_attn->indexer_blocks->nb[3],
+-                            stream*inp_attn->indexer_blocks->nb[3]);
+-
+-                    const int64_t n_extra =
+-                            (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)
+-                            * hparams.indexer_block_size;
+-                    ggml_tensor * extra = ggml_view_4d(ctx0, inp_attn->indexer_extra,
+-                            n_extra, query_count, 1, 1,
+-                            inp_attn->indexer_extra->nb[1],
+-                            inp_attn->indexer_extra->nb[2],
+-                            inp_attn->indexer_extra->nb[3],
+-                            stream*inp_attn->indexer_extra->nb[3]
+-                                + query_start*inp_attn->indexer_extra->nb[1]);
++                    ggml_tensor * base_mask = ci.base_mask;
++
++                    ggml_tensor *& blocks = stream_blocks[stream];
++                    if (!blocks) {
++                        blocks = ggml_view_4d(ctx0, inp_attn->indexer_blocks,
++                                hparams.indexer_block_size, n_blocks, 1, 1,
++                                inp_attn->indexer_blocks->nb[1],
++                                inp_attn->indexer_blocks->nb[2],
++                                inp_attn->indexer_blocks->nb[3],
++                                stream*inp_attn->indexer_blocks->nb[3]);
++                    }
++
++                    ggml_tensor * extra = ci.extra;
+ 
+                     ggml_tensor * sparse_mask = ggml_top_k_mask(
+                             ctx0, base_mask, top_k, block_scores, blocks, extra);
+ 
+                     // Dense-context queries use the causal mask; later queries keep the block-sparse route.
+                     if (inp_attn->indexer_dense_gate) {
+-                        ggml_tensor * gate = ggml_view_4d(ctx0, inp_attn->indexer_dense_gate,
+-                                1, query_count, 1, 1,
+-                                inp_attn->indexer_dense_gate->nb[1],
+-                                inp_attn->indexer_dense_gate->nb[2],
+-                                inp_attn->indexer_dense_gate->nb[3],
+-                                stream*inp_attn->indexer_dense_gate->nb[3]
+-                                    + query_start*inp_attn->indexer_dense_gate->nb[1]);
++                        ggml_tensor * gate = ci.gate;
+ 
+                         // Keep masked values finite: multiplying -inf by a zero gate would produce NaN.
+                         // Blend in the mask type: sparse - gate*(sparse - dense). The dense mask has one head only.
+-- 
+2.43.0
