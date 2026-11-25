@@ -497,8 +497,7 @@ static void assert_msg_equals(const common_chat_msg & expected,
     assert_equals(expected.tool_calls.size(), actual.tool_calls.size());
     for (size_t i = 0; i < expected.tool_calls.size(); i++) {
         const auto & expected_tool_call = expected.tool_calls[i];
-        const auto & actual_tool_call   = actual.tool_calls[i];
-        assert_equals(expected_tool_call.name, actual_tool_call.name);
+        const auto & actual_tool_call   = actual.tool_calls[i];        assert_equals(expected_tool_call.name, actual_tool_call.name);
         assert_equals(renormalize_json(expected_tool_call.arguments), renormalize_json(actual_tool_call.arguments));
         assert_equals(expected_tool_call.id, actual_tool_call.id);
     }
@@ -997,8 +996,7 @@ static common_chat_tool quoted_unquoted_tool{
 };
 
 
-static common_chat_tool tool_2req_4opt{
-    /* .name = */ "tool_2req_4opt",
+static common_chat_tool tool_2req_4opt{    /* .name = */ "tool_2req_4opt",
     /* .description = */ "Tool with 2 required and 4 optional params",
     /* .parameters = */ R"({
         "type": "object",
@@ -1497,8 +1495,7 @@ static void test_peg_parser(common_chat_templates *                      tmpls,
         if (earliest_trigger_pos != std::string::npos) {
             constrain_from = std::max(earliest_trigger_pos, gen_prompt.size());
             constrained = full_input.substr(constrain_from);
-            grammar_triggered = true;
-        } else if (!sampling.grammar_lazy) {
+            grammar_triggered = true;        } else if (!sampling.grammar_lazy) {
             // For non-lazy grammars, the entire input should match
             grammar_triggered = true;
         }
@@ -1997,8 +1994,7 @@ static void test_convert_responses_to_chatcmpl() {
                     "type": "message",
                     "role": "user",
                     "content": "hi"
-                }
-            ],
+                }            ],
             "model": "gpt-5-mini",
             "stream": false,
             "text": {},
@@ -2497,8 +2493,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                "</parameter>\n"
                "<parameter=oldString>\n"
                "#iclunde\n"
-               "</parameter>\n"
-               "<parameter=newString>\n"
+               "</parameter>\n"               "<parameter=newString>\n"
                "#include\n"
                "\n"
                "</parameter>\n"
@@ -2997,8 +2992,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                "<parameter=arg1>\n1\n</parameter>\n"
                "</function>\n"
                "</tool_call>\n"
-               "<tool_call>\n"
-               "<function=special_function_with_opt>\n"
+               "<tool_call>\n"               "<function=special_function_with_opt>\n"
                "<parameter=arg1>\n1\n</parameter>\n"
                "<parameter=arg2>\n2\n</parameter>\n"
                "</function>\n"
@@ -3498,7 +3492,6 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .expect(message_assist)
             .run();
-
         // Continuation tests
         tst.test("world!\nWhat's up?")
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
@@ -3997,8 +3990,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                "<parameter=code>\n"
                "def hello():\n"
                "    print(\"Hello, world!\")\n"
-               "\n"
-               "hello()\n"
+               "\n"               "hello()\n"
                "</parameter>\n"
                "</function>\n"
                "</tool_call>")
@@ -4497,8 +4489,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
         // Tool call with object parameter (JSON-formatted)
         tst.test(
                "Test object</think>\n\n"
-               "<｜DSML｜function_calls>\n"
-               "<｜DSML｜invoke name=\"set_config\">\n"
+               "<｜DSML｜function_calls>\n"               "<｜DSML｜invoke name=\"set_config\">\n"
                "<｜DSML｜parameter name=\"config\" string=\"false\">{\"theme\":\"dark\",\"level\":2}</｜DSML｜parameter>\n"
                "</｜DSML｜invoke>\n"
                "</｜DSML｜function_calls>")
@@ -4997,8 +4988,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                "<arg_key>arg2</arg_key><arg_value>2</arg_value>"
                "</tool_call>")
             .enable_thinking(false)
-            .parallel_tool_calls(true)
-            .tools({ special_function_tool, special_function_tool_with_optional_param })
+            .parallel_tool_calls(true)            .tools({ special_function_tool, special_function_tool_with_optional_param })
             .expect_tool_calls({
                 { "special_function", R"({"arg1": 1})", {} },
                 { "special_function_with_opt", R"({"arg1": 1, "arg2": 2})", {} },
@@ -5497,8 +5487,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                "<ifm|arg_value>1</ifm|arg_value>\n"
                "</ifm|tool_call>\n"
                "</ifm|tool_calls>")
-            .reasoning_format(COMMON_REASONING_FORMAT_NONE)
-            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_NONE)            .tools({ special_function_tool })
             .tool_choice(COMMON_CHAT_TOOL_CHOICE_REQUIRED)
             .expect_content("<ifm|think>\nI'm\nthinking</ifm|think>")
             .expect_tool_calls({ { "special_function", R"({"arg1": 1})", {} } })
@@ -5997,7 +5986,6 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .expect_reconstruction()
             .expect_rules({ "tool-0" })
             .run();
-
         // Kimi-K2-Instruct
         auto tst2 = peg_tester("models/templates/Kimi-K2-Instruct.jinja", detailed_debug);
         tst2.test("Hello, world!\nWhat's up?").expect(message_assist).expect_reconstruction().run();
@@ -6497,8 +6485,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                "]<]minimax[>[</invoke>\n"
                "]<]minimax[>[</tool_call>")
             .enable_thinking(true)
-            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
-            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)            .tools({ special_function_tool })
             .expect_reasoning("Thinking about it")
             .expect_content("Let me call the function.")
             .expect_tool_calls({
@@ -6997,8 +6984,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
         tst.test("world!\nWhat's up?")
             .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
             .enable_thinking(true)
-            .messages({ message_user, message_assist_prefill_content })
-            .add_generation_prompt(false)
+            .messages({ message_user, message_assist_prefill_content })            .add_generation_prompt(false)
             .continue_final_message(COMMON_CHAT_CONTINUATION_CONTENT)
             .expect_reasoning("I'm thinking")
             .expect_content("Hello, world!\nWhat's up?")
@@ -7498,7 +7484,6 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .is_partial(true)
             .expect_reasoning("I'm\nthinking")
             .run();
-
         // Tool call with recipient in role header: " to=functions.NAME<|channel|>analysis<|message|>JSON"
         tst.test(" to=functions.special_function<|channel|>analysis<|message|>{\"arg1\": 1}")
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
@@ -7997,8 +7982,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             "Hello, world!\nWhat's up?"
             "<|function_call|>{\"name\": \"special_function\", \"arguments\": {\"arg1\": 1}}"
         )
-            .tools({ special_function_tool })
-            .expect(message_assist_call_content)
+            .tools({ special_function_tool })            .expect(message_assist_call_content)
             .expect_reconstruction()
             .run();
 
@@ -8497,8 +8481,7 @@ static void test_translate_gemma() {
 
     // assistant prefill is appended after the generation prompt
     inputs.messages               = { message_user, message_assist_prefill_content };
-    inputs.add_generation_prompt  = false;
-    inputs.continue_final_message = COMMON_CHAT_CONTINUATION_CONTENT;
+    inputs.add_generation_prompt  = false;    inputs.continue_final_message = COMMON_CHAT_CONTINUATION_CONTENT;
     params = common_chat_templates_apply(tmpls.get(), inputs);
     assert_equals(std::string("<start_of_turn>model\nHello, "), params.generation_prompt);
     assert_ends_with(params.prompt.str(), "Hey there!<end_of_turn>\n<start_of_turn>model\nHello, ");
@@ -8998,7 +8981,6 @@ static void test_msg_diffs_compute() {
     }
     {
         common_chat_msg msg0;
-
         common_chat_msg msg1;
         msg1.tool_calls = {
             { "special_function", "{\"ar", /* .id = */ "123" }
@@ -9047,6 +9029,33 @@ static void test_msg_diffs_compute() {
 
         assert_equals({ diff1, diff2 }, common_chat_msg_diff::compute_diffs(msg0, msg2));
     }
+}
+
+
+static void test_maxwell_chat_reasoning_content_tool_call() {
+    LOG_DBG("%s\\n", __func__);
+
+    // Exercise the chat-session contract used by Maxwell: reasoning, visible content, and a tool call.
+    auto tmpls = read_templates("models/templates/Qwen3.5-4B.jinja");
+
+    common_chat_templates_inputs inputs;
+    inputs.messages         = { message_user };
+    inputs.tools            = { special_function_tool };
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+
+    common_chat_session session(tmpls.get(), nullptr, inputs);
+    session.feed(common_chat_input(
+        "Let me check.\\n</think>\\nThe answer is 42.\\n"
+        "<tool_call>\\n<function=special_function>\\n"
+        "<parameter=arg1>\\n42\\n</parameter>\\n"
+        "</function>\\n</tool_call>"));
+
+    const auto & msg = session.finish();
+    assert_equals(std::string("Let me check."), msg.reasoning_content);
+    assert_equals(std::string("The answer is 42."), msg.content);
+    assert_equals(size_t(1), msg.tool_calls.size());
+    assert_equals(std::string("special_function"), msg.tool_calls[0].name);
+    assert_equals(std::string("{\\"arg1\\":42}"), json::parse(msg.tool_calls[0].arguments).dump());
 }
 
 int main(int argc, char ** argv) {
@@ -9136,6 +9145,7 @@ int main(int argc, char ** argv) {
         test_reasoning_effort_caps();
         test_prompt_parts();
         test_chat_session();
+        test_maxwell_chat_reasoning_content_tool_call();
         test_chat_json_depth();
         test_reasoning_budget_tokens_per_request();
         test_reasoning_budget_message_per_request();
