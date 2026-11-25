@@ -299,7 +299,8 @@ static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * al
     }
 #endif
 
-    if (addr.offset + size > chunk->max_size + (64u << 20) && getenv("GGML_ALLOC_TRACE")) {
+    if (addr.offset + size > chunk->max_size && getenv("GGML_ALLOC_TRACE") &&
+        ((addr.offset + size) >> 28 > chunk->max_size >> 28 || addr.offset + size > chunk->max_size + (64u << 20))) {
         size_t holes = 0;
         for (int i = 0; i < chunk->n_free_blocks - 1; i++) {
             holes += chunk->free_blocks[i].size;
