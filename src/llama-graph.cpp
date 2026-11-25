@@ -828,6 +828,12 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
         res &= indexer_remote_mask->ne[0] == n_blocks;
         res &= indexer_remote_mask->ne[1] == n_tps;
         res &= indexer_remote_mask->ne[3] == n_stream;
+        if (indexer_dense_gate) {
+            res &= indexer_dense_gate->ne[0] == 1;
+            res &= indexer_dense_gate->ne[1] == n_tps;
+            res &= indexer_dense_gate->ne[2] == 1;
+            res &= indexer_dense_gate->ne[3] == n_stream;
+        }
     }
 
     llama_cparams cparams_msa = params.cparams;
