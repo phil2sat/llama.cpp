@@ -3075,6 +3075,67 @@ ggml_cgraph * llama_context::graph_reserve(
             g.first += ggml_nbytes(t);
             g.second++;
         }
+        // liveness in graph order: a tensor lives from its node to its last consumer (views count for their source)
+        {
+            const int n_nodes = ggml_graph_n_nodes(gf);
+            std::unordered_map<const ggml_tensor *, int> last_use;
+            auto base = [](const ggml_tensor * t) { return t->view_src ? t->view_src : t; };
+            for (int i = 0; i < n_nodes; ++i) {
+                const ggml_tensor * t = ggml_graph_node(gf, i);
+                for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                    if (t->src[s]) {
+                        last_use[base(t->src[s])] = i;
+                    }
+                }
+                if (t->flags & GGML_TENSOR_FLAG_OUTPUT) {
+                    last_use[base(t)] = n_nodes;
+                }
+            }
+            std::vector<int64_t> delta(n_nodes + 2, 0);
+            for (int i = 0; i < n_nodes; ++i) {
+                const ggml_tensor * t = ggml_graph_node(gf, i);
+                if (t->view_src || t->op == GGML_OP_NONE) {
+                    continue;
+                }
+                auto it = last_use.find(t);
+                const int end = it == last_use.end() ? i : std::max(i, it->second);
+                delta[i]       += (int64_t) ggml_nbytes(t);
+                delta[end + 1] -= (int64_t) ggml_nbytes(t);
+            }
+            int64_t cur = 0, peak = 0;
+            int peak_i = 0;
+            for (int i = 0; i < n_nodes; ++i) {
+                cur += delta[i];
+                if (cur > peak) {
+                    peak = cur;
+                    peak_i = i;
+                }
+            }
+            const ggml_tensor * pn = ggml_graph_node(gf, peak_i);
+            LLAMA_LOG_INFO("%s: peak live = %.2f MiB at node %d / %d (%s, %s)\n", __func__,
+                    peak/1024.0/1024.0, peak_i, n_nodes, pn->name, ggml_op_name(pn->op));
+            std::vector<std::pair<int64_t, int>> live;
+            for (int i = 0; i <= peak_i; ++i) {
+                const ggml_tensor * t = ggml_graph_node(gf, i);
+                if (t->view_src || t->op == GGML_OP_NONE) {
+                    continue;
+                }
+                auto it = last_use.find(t);
+                const int end = it == last_use.end() ? i : std::max(i, it->second);
+                if (end >= peak_i) {
+                    live.push_back({(int64_t) ggml_nbytes(t), i});
+                }
+            }
+            std::sort(live.begin(), live.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+            for (size_t k = 0; k < std::min<size_t>(live.size(), 12); ++k) {
+                const ggml_tensor * t = ggml_graph_node(gf, live[k].second);
+                const int end = std::max(live[k].second, last_use.count(t) ? last_use[t] : live[k].second);
+                LLAMA_LOG_INFO("%s: live at peak: node %6d - %6d %-28s [%s] %9.2f MiB\n", __func__,
+                        live[k].second, end, t->name, ggml_op_name(t->op), live[k].first/1024.0/1024.0);
+            }
+            LLAMA_LOG_INFO("%s: live at peak: %zu tensors\n", __func__, live.size());
+        }
+
         std::vector<std::pair<std::string, std::pair<size_t, int>>> sorted(groups.begin(), groups.end());
         std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) { return a.second.first > b.second.first; });
         for (size_t i = 0; i < std::min<size_t>(sorted.size(), 20); ++i) {
