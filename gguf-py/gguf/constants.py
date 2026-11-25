@@ -250,6 +250,7 @@ class Keys:
             BLOCK_SIZE   = "{arch}.attention.indexer.block_size"    # MSA
             LOCAL_BLOCKS = "{arch}.attention.indexer.local_blocks"  # MSA
             PREFIX_BLOCKS = "{arch}.attention.indexer.prefix_blocks" # maxwell-moe
+            DENSE_CONTEXT = "{arch}.attention.indexer.dense_context" # maxwell-moe
             TYPES      = "{arch}.attention.indexer.types"
             KPOOL             = "{arch}.attention.indexer.kpool"              # GLM5-Next
             KPOOL_SELECT_TAIL = "{arch}.attention.indexer.kpool_select_tail"  # GLM5-Next
