@@ -44,6 +44,7 @@ void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,    hparams.indexer_block_size);
     ml.get_key(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS,  hparams.indexer_local_blocks);
     ml.get_key(LLM_KV_ATTENTION_INDEXER_PREFIX_BLOCKS, hparams.indexer_prefix_blocks);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_DENSE_CONTEXT, hparams.indexer_dense_context, false);
 
     if (hparams.indexer_n_head != hparams.n_head_kv()) {
         throw std::runtime_error(format(
