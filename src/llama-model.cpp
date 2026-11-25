@@ -3328,6 +3328,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr);
                 } else {
                     // The backbone uses MSA and requires one independently mapped cache stream per sequence.
+                    // Keep the appended MTP layers out of the main-context cache; they have their own
+                    // cache when the draft context is created.
+                    const llama_kv_cache::layer_filter_cb filter_base =
+                        [&](uint32_t il) { return il < hparams.n_layer(); };
                     const llama_kv_cache::layer_filter_cb filter_idx =
                         [&](uint32_t il) { return il < hparams.n_layer(); };
 
@@ -3347,7 +3351,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             cparams.n_seq_max,
                             hparams.n_swa,
                             hparams.swa_type,
-                            nullptr,
+                            filter_base,
                             filter_idx,
                             nullptr);
                 }
