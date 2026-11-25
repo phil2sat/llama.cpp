@@ -3214,6 +3214,17 @@ ggml_tensor * llm_graph_context::build_attn_msa_fa(
 
     ggml_tensor * o = ggml_flash_attn_ext(ctx0, q, k, v, mask, kq_scale,
                                           hparams.f_max_alibi_bias, 0.0f);
+
+    // Bound sparse Flash Attention work by the largest possible finite-mask row.
+    // Dense-context queries retain the full causal prefix; later queries use selected
+    // remote blocks plus the mandatory prefix and local blocks.
+    const int64_t n_sparse_kv = (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks
+            + hparams.indexer_top_k) * hparams.indexer_block_size;
+    const int64_t n_kv_max = std::min<int64_t>(k->ne[1],
+            std::max<int64_t>(hparams.indexer_dense_context, n_sparse_kv));
+    GGML_ASSERT(n_kv_max > 0);
+    ggml_flash_attn_ext_set_n_kv_max(o, static_cast<int32_t>(n_kv_max));
+
     ggml_prec_set_acc(o, GGML_PREC_F32);
     cb(o, "msa_fattn", il);
 
