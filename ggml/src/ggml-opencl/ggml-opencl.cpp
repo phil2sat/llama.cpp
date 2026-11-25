@@ -12691,7 +12691,12 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
                 op->src[1]->type == GGML_TYPE_I32 &&
                 (!op->src[2] || op->src[2]->type == GGML_TYPE_F32) &&
                 (!op->src[3] || op->src[3]->type == GGML_TYPE_I32) &&
-                (!op->src[4] || op->src[4]->type == GGML_TYPE_I32);
+                (!op->src[4] || op->src[4]->type == GGML_TYPE_I32) &&
+                // block maps per stream and extra cells broadcast over the rows are not implemented
+                (!op->src[3] || (op->src[3]->ne[2] == 1 && op->src[3]->ne[3] == 1)) &&
+                (!op->src[4] || (op->src[4]->ne[1] == op->src[1]->ne[1] &&
+                                 op->src[4]->ne[2] == op->src[1]->ne[2] &&
+                                 op->src[4]->ne[3] == op->src[1]->ne[3]));
         case GGML_OP_ARGSORT: {
             load_cl_kernels_argsort(backend_ctx);
 
