@@ -4083,11 +4083,11 @@ llm_graph_input_attn_k_dsa_iswa * llm_graph_context::build_attn_inp_k_dsa_iswa()
     return (llm_graph_input_attn_k_dsa_iswa *) res->add_input(std::move(inp));
 }
 
-llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled, bool force_per_stream) const {
+llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled, bool block_routing) const {
     const auto * mctx_cur = static_cast<const llama_kv_cache_msa_context *>(mctx);
 
     llama_cparams cparams_msa = cparams;
-    if (force_per_stream) {
+    if (block_routing) {
         cparams_msa.kv_unified = false;
     }
     auto inp = std::make_unique<llm_graph_input_attn_kv_msa>(hparams, cparams_msa, mctx_cur);
@@ -4109,7 +4109,9 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
 
     if (msa_enabled) {
         inp->self_k_idxs_idx = mctx_idx->build_input_k_idxs(ctx0, ubatch);
+    }
 
+    if (msa_enabled && block_routing) {
         const int64_t n_pos = mctx_cur->get_n_pos(&ubatch);
         const int64_t n_stream = ubatch.n_seqs_unq;
         const int64_t n_tps = ubatch.n_tokens / n_stream;

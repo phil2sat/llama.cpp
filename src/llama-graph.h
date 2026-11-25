@@ -1418,7 +1418,9 @@ struct llm_graph_context {
 
     llm_graph_input_attn_k_dsa_iswa * build_attn_inp_k_dsa_iswa() const;
 
-    llm_graph_input_attn_kv_msa * build_attn_inp_kv_msa(bool msa_enabled, bool force_per_stream = false) const;
+    // block_routing: block-sparse routing in position space (maxwell-moe). It needs one KV stream per sequence and the
+    // position <-> cell maps, which are only created when requested: an input that no graph consumes gets no buffer
+    llm_graph_input_attn_kv_msa * build_attn_inp_kv_msa(bool msa_enabled, bool block_routing = false) const;
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_k_dsa * inp,

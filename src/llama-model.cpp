@@ -3340,7 +3340,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             params.no_alloc,
                             params.type_k,
                             params.type_v,
-                            !cparams.flash_attn,
+                            false, // v_trans: the MBSA graph always uses the flash attention op, also with -fa off
                             cparams.offload_kqv,
                             false,
                             cparams.n_ctx_seq,

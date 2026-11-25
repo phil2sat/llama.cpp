@@ -1483,7 +1483,8 @@ struct llama_model_xing4_0 : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
     uint32_t graph_nodes_per_tensor() const override { return 32; }
-    uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_ctx_seq) const override {
+    uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_seq_max, uint32_t n_ctx_seq) const override {
+        GGML_UNUSED(n_seq_max);
         constexpr uint64_t query_chunk_size = 64;
         constexpr uint64_t key_chunk_size = 8192;
         constexpr uint64_t nodes_per_key_chunk = 8;
@@ -2318,6 +2319,12 @@ struct llama_model_maxwell_moe : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
     uint32_t graph_nodes_per_tensor() const override { return 32; }
+    uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_seq_max, uint32_t n_ctx_seq) const override;
+
+    // the block routing is unrolled per stream, query chunk and key chunk: the scores of a query chunk are accumulated
+    // over key chunks, which bounds the score temporary to key_chunk_size*query_chunk_size*n_head_kv floats
+    static constexpr int64_t query_chunk_size = 64;
+    static constexpr int64_t key_chunk_size   = 8192;
 
     struct graph : public llm_graph_context {
         struct no_build {};

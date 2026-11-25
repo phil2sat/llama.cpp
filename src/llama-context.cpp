@@ -2919,7 +2919,7 @@ uint32_t llama_context::graph_max_nodes() const {
     }
 
     // Add model-specific graph structures that are not represented by the tensor count.
-    const uint64_t extra_nodes = model.graph_nodes_extra(cparams.n_ubatch, cparams.n_ctx_seq);
+    const uint64_t extra_nodes = model.graph_nodes_extra(cparams.n_ubatch, cparams.n_seq_max, cparams.n_ctx_seq);
     res += (uint32_t) std::min<uint64_t>(extra_nodes, UINT32_MAX - res);
 
     // every sampler builds n_outputs_max_per_seq chains, see llm_graph_context::build_sampling

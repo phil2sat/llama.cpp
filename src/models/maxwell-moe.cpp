@@ -361,6 +361,17 @@ ggml_tensor * llama_model_maxwell_moe::graph::build_hc_head(
     return build_hc_collapse(x, pre, -1);
 }
 
+uint64_t llama_model_maxwell_moe::graph_nodes_extra(uint32_t n_ubatch, uint32_t n_seq_max, uint32_t n_ctx_seq) const {
+    constexpr uint64_t nodes_per_key_chunk   = 12;
+    constexpr uint64_t nodes_per_query_chunk = 64;
+
+    // a ubatch holds either many tokens of one stream or one token of many streams
+    const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1)/query_chunk_size + std::min(n_seq_max, n_ubatch);
+    const uint64_t n_key_chunks   = (n_ctx_seq + key_chunk_size - 1)/key_chunk_size;
+
+    return uint64_t(hparams.n_layer_all)*n_query_chunks*(n_key_chunks*nodes_per_key_chunk + nodes_per_query_chunk);
+}
+
 llama_model_maxwell_moe::graph::graph(
         const llm_graph_params & params,
         llama_model_maxwell_moe::graph::no_build) : llm_graph_context(params) {
@@ -454,8 +465,6 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             const int64_t n_tokens_per_stream = n_tokens / n_stream;
             const int64_t n_indexer_groups = hparams.indexer_n_head;
             const int64_t n_top_k = std::min<int64_t>(hparams.indexer_top_k, n_blocks);
-            const int64_t query_chunk_size = 64;
-            const int64_t key_chunk_size = 8192;
 
             GGML_ASSERT(n_pos % hparams.indexer_block_size == 0);
             GGML_ASSERT(n_tokens % n_stream == 0);
@@ -598,13 +607,18 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             Qcur->nb[1], Qcur->nb[2],
                             token_offset*Qcur->nb[2]);
 
-                    // Match the grouped-query ratio to the actual query and KV tensor dimensions.
-                    // This also keeps synthetic test models with non-production head layouts valid.
-                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 2, 3, 1);
-                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 2, 3, 1);
-                    // Flash Attention requires an F16 mask; top-k masking produces F32.
-                    ggml_tensor * mask_fa = ggml_cast(ctx0,
-                            ggml_permute(ctx0, sparse_mask, 0, 1, 3, 2), GGML_TYPE_F16);
+                    // Every KV group becomes a channel (ne[3]) of the attention op, so that the group's own sparse
+                    // mask lines up with the KV head that the query heads of the group read:
+                    // k, v [D, n_head_kv, n_kv, 1] -> [D, n_kv, 1, n_head_kv], mask [n_kv, n_q, n_head_kv] -> [n_kv, n_q, 1, n_head_kv]
+                    // The GQA ratio is taken from the tensors, which keeps synthetic test models valid.
+                    ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
+                    ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
+                    ggml_tensor * mask_fa = ggml_reshape_4d(ctx0, sparse_mask,
+                            sparse_mask->ne[0], sparse_mask->ne[1], 1, sparse_mask->ne[2]);
+                    // Flash Attention requires an F16 mask, the mask is F32 without -fa
+                    if (mask_fa->type != GGML_TYPE_F16) {
+                        mask_fa = ggml_cast(ctx0, mask_fa, GGML_TYPE_F16);
+                    }
 
                     GGML_ASSERT(k_fa->ne[3] == mask_fa->ne[3]);
                     GGML_ASSERT(q_chunk->ne[1] % k_fa->ne[3] == 0);
