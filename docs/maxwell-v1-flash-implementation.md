@@ -96,6 +96,8 @@ GGML_OP_TOP_K_MASK is a generic ggml op; the fork does not add an opcode. Backen
 
 **Hexagon.** ggml/src/ggml-hexagon/htp/top-k-mask-ops.c implements the op for HTP. The kernel params builder accepts the shapes Maxwell builds: the graph slices block map, extra cells, and base mask per stream into 4D views with ne[2] = ne[3] = 1 and per-query extra rows, which passes the row-flat and stride checks. Shapes the HTP kernel cannot address (a block map spanning streams, extra cells broadcast over rows, an oversized blocks row stride) return false from the kernel params builder and stay on the CPU. This path was not executed on Hexagon hardware here.
 
+**Backend table.** docs/ops.md is generated from the CSV snapshots in docs/ops/ by scripts/create_ops_docs.py, so it reports what those snapshots contain, not what the current tree implements. The CPU rows for GGML_OP_TOP_K_MASK were regenerated on this branch with test-backend-ops support -b CPU and the table now lists the op as supported for CPU. The CUDA, Metal, SYCL, and OpenCL snapshots predate the op, and the OpenCL rows that do exist were captured before the broadcast fix, so the generated table still shows the op as unsupported for backends that carry it in this tree (ggml-cuda/top-k-mask.cu, ggml-metal/kernels/misc.metal, ggml/src/ggml-vulkan, ggml/src/ggml-opencl). Regenerate those CSVs on the matching hardware before trusting the table for non-CPU backends.
+
 ## Chat parsing fixture
 
 ### tests/test-chat.cpp

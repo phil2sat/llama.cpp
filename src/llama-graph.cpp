@@ -792,7 +792,8 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
     if (indexer_dense_gate) {
         std::vector<float> gate(ubatch->n_tokens);
         for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
-            gate[i] = ubatch->pos[i] < hparams.indexer_dense_context ? 1.0f : 0.0f;
+            const int64_t pos = ubatch->pos[i];
+            gate[i] = pos < (int64_t) hparams.indexer_dense_context ? 1.0f : 0.0f;
         }
         ggml_backend_tensor_set(indexer_dense_gate, gate.data(), 0, ggml_nbytes(indexer_dense_gate));
     }
