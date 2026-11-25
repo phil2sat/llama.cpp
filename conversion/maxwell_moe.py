@@ -205,7 +205,8 @@ class MaxwellMoeModel(TextModel):
         self.gguf_writer.add_indexer_block_size(block)
         self.gguf_writer.add_indexer_local_blocks(hparams["block_sparse_gqa_local_window_size"] // block)
         self.gguf_writer.add_indexer_prefix_blocks(hparams["block_sparse_gqa_prefix_window_size"] // block)
-        self.gguf_writer.add_indexer_dense_context(hparams.get("block_sparse_gqa_dense_context", 0))
+        # Maxwell uses dense causal GQA for the first 16K query positions before switching to BSA.
+        self.gguf_writer.add_indexer_dense_context(hparams.get("block_sparse_gqa_dense_context", 16 * 1024))
 
         if self.mtp_only:
             self.gguf_writer.add_nextn_predict_layers(self.block_count - int(hparams["num_hidden_layers"]))
