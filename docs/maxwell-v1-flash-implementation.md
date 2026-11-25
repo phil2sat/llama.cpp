@@ -36,6 +36,8 @@ MTP conversion is explicit: accepted MTP tensor names are enumerated and optiona
 
 The Maxwell metadata key attention.indexer.dense_context is carried into hparams.indexer_dense_context. The converter defaults it to 16,384 tokens when the source configuration does not provide a value. This value chooses the attention mask; it does not disable indexer graph construction.
 
+**Required GGUF metadata for paper-compatible dense prefix.** Both the target GGUF and the standalone MTP draft GGUF must contain `maxwell-moe.attention.indexer.dense_context=16384` for Maxwell-V1-Flash. The conversion output must be checked for both files; the observed MTP output omitted this key, so do not assume the target's metadata is automatically present in the draft. If either GGUF is missing the key or has a value that is not read, the loader falls back to sparse attention from the first token (no dense prefix). This fallback is not paper-compatible. Rebuild the affected GGUF with the required metadata and verify the key/value in its metadata dump.
+
 ## Model registration, hyperparameters, and tensor loading
 
 ### src/llama-model.cpp
