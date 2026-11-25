@@ -5986,7 +5986,8 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .expect_reconstruction()
             .run();
 
-        // Continuation tests        tst.test("world!\nWhat's up?")
+        // Continuation tests
+        tst.test("world!\nWhat's up?")
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .enable_thinking(true)
             .messages({ message_user, message_assist_prefill_content })
@@ -7982,7 +7983,8 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
 
     // TranslateGemma
     {
-        // no reconstruction check, the template adds whitespace around assistant content        auto tst = peg_tester("models/templates/google-translategemma-4b-it.jinja", detailed_debug);
+        // no reconstruction check, the template adds whitespace around assistant content
+        auto tst = peg_tester("models/templates/google-translategemma-4b-it.jinja", detailed_debug);
         tst.test("Hello, world!\nWhat's up?").expect(message_assist).run();
     }
 
@@ -9018,17 +9020,28 @@ static void test_maxwell_chat_reasoning_content_tool_call() {
     LOG_DBG("%s\n", __func__);
 
     // Maxwell uses <think> reasoning and XML-style tool calls.
-    // This fixture checks the parser contract with the existing compatible template.
-    auto tmpls = read_templates("models/templates/Qwen3.5-4B.jinja");
+    // It also checks the <|maxwell_start|>/<|maxwell_end|> turns and the generation prompt of the shipped template.
+    auto tmpls = read_templates("models/templates/Maxwell-V1-Flash.jinja");
 
     common_chat_templates_inputs inputs;
     inputs.messages         = { message_user };
     inputs.tools            = { special_function_tool };
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
 
+    // the shipped template renders Maxwell turns and opens the assistant turn with the reasoning block
+    const auto applied = common_chat_templates_apply(tmpls.get(), inputs);
+    assert_contains(applied.prompt.str(), "<|maxwell_start|>system");
+    assert_contains(applied.prompt.str(), "<|maxwell_end|>");
+    assert_contains(applied.generation_prompt, "<|maxwell_start|>assistant");
+    assert_ends_with(applied.prompt.str(), applied.generation_prompt);
+
+    // the reasoning tags come from the template, so the fixture stays valid if they change
+    assert_equals(false, applied.thinking_end_tags.empty());
+    const std::string think_end = applied.thinking_end_tags.front();
+
     common_chat_session session(tmpls.get(), nullptr, inputs);
     session.feed(common_chat_input(
-        "Let me check.\n</think>\n\nThe answer is 42.\n"
+        std::string("Let me check.") + think_end + "\n\nThe answer is 42.\n"
         "<tool_call>\n<function=special_function>\n"
         "<parameter=arg1>\n42\n</parameter>\n"
         "</function>\n</tool_call>"));

@@ -73,6 +73,13 @@ kernel void kernel_top_k_mask(
         ulong nbd1,
         ulong nbd2,
         ulong nbd3,
+        ulong nbb2,
+        ulong nbb3,
+        ulong neb2,
+        ulong neb3,
+        ulong nee1,
+        ulong nee2,
+        ulong nee3,
         int   fill
 ) {
     const ulong row = get_group_id(1);
@@ -82,6 +89,9 @@ kernel void kernel_top_k_mask(
     const ulong tid = get_local_id(0);
     const ulong nth = get_local_size(0);
     const ulong n_pick = blocks ? neb1 : score ? nes0 : nem0;
+    // block maps and extra cells broadcast by i mod ne, as on the CPU
+    const ulong ib2 = i2 % neb2;
+    const ulong ib3 = i3 % neb3;
 
     global const MASK_T * mask_row = (global const MASK_T *) (mask + offsetm
         + (i1 % nem1)*nbm1 + (i2 % nem2)*nbm2 + (i3 % nem3)*nbm3);
@@ -101,7 +111,8 @@ kernel void kernel_top_k_mask(
     // Repeated cells copy the same mask value, as in the CUDA and Metal kernels.
     for (ulong j = tid; j < nek0 + nee0; j += nth) {
         if (j >= nek0) {
-            const int c = *(global const int *) (extra + offsete + (j - nek0)*nbe0 + i1*nbe1 + i2*nbe2 + i3*nbe3);
+            const int c = *(global const int *) (extra + offsete + (j - nek0)*nbe0
+                + (i1 % nee1)*nbe1 + (i2 % nee2)*nbe2 + (i3 % nee3)*nbe3);
             if (c >= 0 && (ulong) c < nem0) {
                 dst_row[c] = mask_row[c];
             }
@@ -117,7 +128,7 @@ kernel void kernel_top_k_mask(
         }
         if (blocks) {
             for (ulong k = 0; k < neb0; ++k) {
-                const int c = *(global const int *) (blocks + offsetb + k*nbb0 + p*nbb1);
+                const int c = *(global const int *) (blocks + offsetb + k*nbb0 + p*nbb1 + ib2*nbb2 + ib3*nbb3);
                 if (c >= 0 && (ulong) c < nem0) {
                     dst_row[c] = mask_row[c];
                 }
