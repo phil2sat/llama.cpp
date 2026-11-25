@@ -9017,7 +9017,8 @@ static void test_msg_diffs_compute() {
 static void test_maxwell_chat_reasoning_content_tool_call() {
     LOG_DBG("%s\n", __func__);
 
-    // Maxwell emits <think> reasoning and XML-style tool calls; parse its completion payload with the existing compatible fixture template.
+    // Maxwell uses <think> reasoning and XML-style tool calls.
+    // This fixture checks the parser contract with the existing compatible template.
     auto tmpls = read_templates("models/templates/Qwen3.5-4B.jinja");
 
     common_chat_templates_inputs inputs;
