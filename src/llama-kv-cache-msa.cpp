@@ -39,6 +39,10 @@ llama_kv_cache_msa::llama_kv_cache_msa(
     // the MSA indexer uses a single key head per layer
     std::fill(hparams_idx.n_head_kv_arr.begin(), hparams_idx.n_head_kv_arr.end(), 1);
     hparams_idx.n_embd_head_k_full = model.hparams.indexer_head_size;
+    // The indexer stores keys only. Match the established Qwen4Exp indexer-cache
+    // convention so the generic cache does not allocate an unused V tensor.
+    hparams_idx.n_embd_head_k_mla_impl = model.hparams.indexer_head_size;
+    hparams_idx.n_embd_head_v_mla_impl = model.hparams.indexer_head_size;
     // the rope parameters are kept identical to the main cache
 
     LLAMA_LOG_INFO("%s: creating indexer KV cache, size = %u cells\n", __func__, kv_size);
@@ -46,7 +50,7 @@ llama_kv_cache_msa::llama_kv_cache_msa(
     kv_idx = std::make_unique<llama_kv_cache>(
             model, no_alloc, hparams_idx, type_k, type_v,
             v_trans, offload, unified, kv_size, n_seq_max,
-            n_swa, swa_type, nullptr, filter_idx, nullptr, nullptr, "", true);
+            n_swa, swa_type, nullptr, filter_idx, reuse, nullptr);
 }
 
 void llama_kv_cache_msa::clear(bool data) {
