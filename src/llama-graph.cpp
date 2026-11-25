@@ -789,6 +789,13 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
         mctx_msa->set_input_remote_block_mask(indexer_remote_mask, ubatch,
                 hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
     }
+    if (indexer_dense_gate) {
+        std::vector<float> gate(ubatch->n_tokens);
+        for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
+            gate[i] = ubatch->pos[i] < hparams.indexer_dense_context ? 1.0f : 0.0f;
+        }
+        ggml_backend_tensor_set(indexer_dense_gate, gate.data(), 0, ggml_nbytes(indexer_dense_gate));
+    }
 }
 
 bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
