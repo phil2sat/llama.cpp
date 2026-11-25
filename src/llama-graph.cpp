@@ -1,5 +1,7 @@
 #include "llama-graph.h"
 
+#include "ggml-backend.h"
+
 #include "llama-impl.h"
 #include "llama-model.h"
 #include "llama-moe-cache.h"
