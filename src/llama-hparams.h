@@ -362,6 +362,7 @@ struct llama_hparams {
     uint32_t indexer_block_size  = 0;
     uint32_t indexer_local_blocks = 0;
     uint32_t indexer_prefix_blocks = 0;
+    uint32_t indexer_dense_context = 0; // Dense causal attention for queries before this position; 0 disables it.
 
     // Indexer is "full" (1) or "shared" (0)
     // Shared indexers reuse top-k from previous full layer
