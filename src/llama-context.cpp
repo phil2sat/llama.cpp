@@ -3058,6 +3058,32 @@ ggml_cgraph * llama_context::graph_reserve(
         return nullptr;
     }
 
+    // debug: list the largest tensor groups of the reserved graph, layer suffix stripped
+    if (!split_only && gf && getenv("LLAMA_GRAPH_RESERVE_TOP")) {
+        std::map<std::string, std::pair<size_t, int>> groups;
+        for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+            const ggml_tensor * t = ggml_graph_node(gf, i);
+            if (t->view_src) {
+                continue;
+            }
+            std::string name = strncmp(t->name, "node_", 5) == 0 ? "(unnamed)" : t->name;
+            const size_t pos = name.rfind('-');
+            if (pos != std::string::npos && pos + 1 < name.size() && isdigit((unsigned char) name[pos + 1])) {
+                name.resize(pos);
+            }
+            auto & g = groups[name + " [" + ggml_op_name(t->op) + "]"];
+            g.first += ggml_nbytes(t);
+            g.second++;
+        }
+        std::vector<std::pair<std::string, std::pair<size_t, int>>> sorted(groups.begin(), groups.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) { return a.second.first > b.second.first; });
+        for (size_t i = 0; i < std::min<size_t>(sorted.size(), 20); ++i) {
+            LLAMA_LOG_INFO("%s: top %2zu: %-48s total = %9.2f MiB, count = %5d, each = %8.2f MiB\n", __func__, i,
+                    sorted[i].first.c_str(), sorted[i].second.first/1024.0/1024.0, sorted[i].second.second,
+                    sorted[i].second.first/1024.0/1024.0/sorted[i].second.second);
+        }
+    }
+
     return gf;
 }
 
