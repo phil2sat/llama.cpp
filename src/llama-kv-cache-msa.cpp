@@ -39,6 +39,10 @@ llama_kv_cache_msa::llama_kv_cache_msa(
     // the MSA indexer uses a single key head per layer
     std::fill(hparams_idx.n_head_kv_arr.begin(), hparams_idx.n_head_kv_arr.end(), 1);
     hparams_idx.n_embd_head_k_full = model.hparams.indexer_head_size;
+    // The MSA indexer stores keys only. Mark its cache as MLA-shaped so the
+    // generic KV cache allocates no V tensor for this indexer stream.
+    hparams_idx.n_embd_head_k_mla_impl = model.hparams.indexer_head_size;
+    hparams_idx.n_embd_head_v_mla_impl = model.hparams.indexer_head_size;
     // the rope parameters are kept identical to the main cache
 
     LLAMA_LOG_INFO("%s: creating indexer KV cache, size = %u cells\n", __func__, kv_size);
