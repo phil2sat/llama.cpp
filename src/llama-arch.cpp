@@ -346,6 +346,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,           "%s.attention.indexer.block_size"           },
     { LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS,         "%s.attention.indexer.local_blocks"         },
     { LLM_KV_ATTENTION_INDEXER_PREFIX_BLOCKS,        "%s.attention.indexer.prefix_blocks"        },
+    { LLM_KV_ATTENTION_INDEXER_DENSE_CONTEXT,        "%s.attention.indexer.dense_context"        },
     { LLM_KV_ATTENTION_INDEXER_TYPES,                "%s.attention.indexer.types"                },
     { LLM_KV_ATTENTION_INDEXER_KPOOL,                "%s.attention.indexer.kpool"                },
     { LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL,    "%s.attention.indexer.kpool_select_tail"    },
