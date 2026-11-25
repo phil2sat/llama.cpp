@@ -541,6 +541,7 @@ public:
     ggml_tensor * indexer_blocks = nullptr; // I32 [block_size, n_blocks, 1, n_stream]
     ggml_tensor * indexer_extra = nullptr; // I32 [n_extra, n_tokens/n_stream, 1, n_stream]
     ggml_tensor * indexer_remote_mask = nullptr; // F32 [n_blocks, n_tokens/n_stream, 1, n_stream]
+    ggml_tensor * indexer_dense_gate = nullptr; // F32 [1, n_tokens/n_stream, 1, n_stream]
 
     const llama_kv_cache_msa_context * mctx_msa;
 };
