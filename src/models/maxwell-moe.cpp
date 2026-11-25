@@ -616,19 +616,15 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                     + query_start*inp_attn->indexer_dense_gate->nb[1]);
 
                         // Keep masked values finite: multiplying -inf by a zero gate would produce NaN.
+                        // Blend in the mask type: sparse - gate*(sparse - dense). The dense mask has one head only.
                         constexpr float mask_floor = -30000.0f;
-                        auto to_finite_mask = [&](ggml_tensor * mask) {
-                            if (mask->type != GGML_TYPE_F32) {
-                                mask = ggml_cast(ctx0, mask, GGML_TYPE_F32);
-                            }
-                            return ggml_clamp(ctx0, mask, mask_floor, 0.0f);
-                        };
-                        ggml_tensor * sparse_finite = to_finite_mask(sparse_mask);
-                        ggml_tensor * dense_finite  = to_finite_mask(base_mask);
-                        ggml_tensor * sparse_gate  = ggml_scale_bias(ctx0, gate, -1.0f, 1.0f);
-                        sparse_mask = ggml_add(ctx0,
-                                ggml_mul(ctx0, sparse_finite, sparse_gate),
-                                ggml_mul(ctx0, dense_finite, gate));
+                        if (gate->type != sparse_mask->type) {
+                            gate = ggml_cast(ctx0, gate, sparse_mask->type);
+                        }
+                        ggml_tensor * sparse_finite = ggml_clamp(ctx0, sparse_mask, mask_floor, 0.0f);
+                        ggml_tensor * dense_finite  = ggml_clamp(ctx0, base_mask,   mask_floor, 0.0f);
+                        ggml_tensor * delta = ggml_mul(ctx0, ggml_sub(ctx0, sparse_finite, dense_finite), gate);
+                        sparse_mask = ggml_sub(ctx0, sparse_finite, delta);
                     }
                     cb(sparse_mask, "maxwell_sparse_mask", il);
 
