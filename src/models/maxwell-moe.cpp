@@ -601,6 +601,32 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
                     ggml_tensor * sparse_mask = ggml_top_k_mask(
                             ctx0, base_mask, top_k, block_scores, blocks, extra);
+
+                    // Dense-context queries use the causal mask; later queries keep the block-sparse route.
+                    if (inp_attn->indexer_dense_gate) {
+                        ggml_tensor * gate = ggml_view_4d(ctx0, inp_attn->indexer_dense_gate,
+                                1, query_count, 1, 1,
+                                inp_attn->indexer_dense_gate->nb[1],
+                                inp_attn->indexer_dense_gate->nb[2],
+                                inp_attn->indexer_dense_gate->nb[3],
+                                stream*inp_attn->indexer_dense_gate->nb[3]
+                                    + query_start*inp_attn->indexer_dense_gate->nb[1]);
+
+                        // Keep masked values finite: multiplying -inf by a zero gate would produce NaN.
+                        constexpr float mask_floor = -30000.0f;
+                        auto to_finite_mask = [&](ggml_tensor * mask) {
+                            if (mask->type != GGML_TYPE_F32) {
+                                mask = ggml_cast(ctx0, mask, GGML_TYPE_F32);
+                            }
+                            return ggml_clamp(ctx0, mask, mask_floor, 0.0f);
+                        };
+                        ggml_tensor * sparse_finite = to_finite_mask(sparse_mask);
+                        ggml_tensor * dense_finite  = to_finite_mask(base_mask);
+                        ggml_tensor * sparse_gate  = ggml_scale_bias(ctx0, gate, -1.0f, 1.0f);
+                        sparse_mask = ggml_add(ctx0,
+                                ggml_mul(ctx0, sparse_finite, sparse_gate),
+                                ggml_mul(ctx0, dense_finite, gate));
+                    }
                     cb(sparse_mask, "maxwell_sparse_mask", il);
 
                     ggml_tensor * q_chunk = ggml_view_3d(ctx0, Qcur,
