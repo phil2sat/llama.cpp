@@ -13,7 +13,7 @@ The branch also contains unrelated upstream/runtime changes. This document cover
 3. src/llama-arch.h and src/llama-arch.cpp define the architecture ID, GGUF key names, and architecture-name mapping.
 4. src/llama-model.cpp dispatches the architecture to llama_model_maxwell_moe. src/models/maxwell-moe.cpp reads and validates model hyperparameters, requests tensors, and builds the model graph.
 5. src/llama-graph.cpp supplies graph inputs and graph-reuse checks; src/llama-kv-cache-msa.cpp supplies MSA cache/indexer state.
-6. tests/test-chat.cpp exercises reasoning/content/tool-call parsing with a compatible existing template. It does not run Maxwell inference.
+6. models/templates/Maxwell-V1-Flash.jinja is the chat template shipped for the architecture; tests/test-chat.cpp exercises reasoning/content/tool-call parsing with it. It does not run Maxwell inference.
 
 ## Checkpoint conversion and GGUF contract
 
@@ -50,7 +50,7 @@ Declares the Maxwell model/graph-builder types and connects them to shared model
 
 This is the central implementation file.
 
-**Hyperparameters and validation.** The loader reads RMS-normalization epsilon, leading dense-layer count, expert feed-forward dimensions, indexer parameters, and dense-context threshold. It validates indexer head count against KV-head count and indexer head size against model head size. Invalid zero block-size, top-k, prefix-block, or local-block settings are rejected before graph construction.
+**Hyperparameters and validation.** The loader reads RMS-normalization epsilon, leading dense-layer count, expert feed-forward dimensions, indexer parameters, and dense-context threshold. attention.indexer.dense_context is optional; when a GGUF lacks it the loader logs a warning and runs without a dense prefix instead of failing. It validates indexer head count against KV-head count and indexer head size against model head size. Invalid zero block-size, top-k, prefix-block, or local-block settings are rejected before graph construction.
 
 **Tensor inventory.** The loader requests backbone attention projections and per-head Q/K normalization, indexer projections and normalization, leading dense FFN tensors, routed-expert tensors, shared-expert tensors, and hyper-connection mixing/collapse tensors. MTP tensors are loaded as a separate decoder inventory, not as backbone layers.
 
@@ -88,11 +88,19 @@ The converter has an explicit Maxwell MTP tensor inventory and export controls i
 
 Shared speculative-decoding control flow is in common/speculative.cpp; shared graph/model interfaces are in src/models/models.h and src/llama-graph.*. Maxwell support fits those interfaces: target/draft state handling and verification are shared speculative-decoding responsibilities, while Maxwell-specific tensor loading and graph construction belong to the model and converter.
 
+## Backend coverage for the sparse mask
+
+GGML_OP_TOP_K_MASK is a generic ggml op; the fork does not add an opcode. Backends that cannot run it keep the op on the CPU path.
+
+**OpenCL.** ggml/src/ggml-opencl/kernels/top_k_mask.cl masks one destination row per work item. The kernel resolves broadcast strides the way the CPU reference does (nb2/nb3 of the block map and of the extra cells), so a block map with fewer rows than the mask, or extra cells shared across rows, stays correct instead of reading neighbouring rows. ggml_opencl_supports_op therefore accepts these shapes; it still rejects non-I32/I64 ids, unsupported mask/score types, and shapes the kernel cannot address. The host code compiles with GGML_OPENCL=ON and the kernel passes a clang OpenCL C syntax check, but the change was not executed on an OpenCL device here.
+
+**Hexagon.** ggml/src/ggml-hexagon/htp/top-k-mask-ops.c implements the op for HTP. The kernel params builder accepts the shapes Maxwell builds: the graph slices block map, extra cells, and base mask per stream into 4D views with ne[2] = ne[3] = 1 and per-query extra rows, which passes the row-flat and stride checks. Shapes the HTP kernel cannot address (a block map spanning streams, extra cells broadcast over rows, an oversized blocks row stride) return false from the kernel params builder and stay on the CPU. This path was not executed on Hexagon hardware here.
+
 ## Chat parsing fixture
 
 ### tests/test-chat.cpp
 
-The Maxwell fixture covers a completion containing <think> reasoning, ordinary content, and an XML-style tool call. It uses the existing compatible models/templates/Qwen3.5-4B.jinja template to check the parser contract. It does not load Maxwell weights, validate logits, exercise MSA attention, or prove tool execution by a running server.
+The Maxwell fixture covers a completion containing reasoning, ordinary content, and an XML-style tool call. It runs against models/templates/Maxwell-V1-Flash.jinja, the template shipped with the model, and checks the rendered turns (`<|maxwell_start|>`/`<|maxwell_end|>`), the generation prompt, the reasoning tag, ordinary content, and the XML-style tool call. The reasoning tags are read from the applied template, so the fixture stays valid if the template changes them. It does not load Maxwell weights, validate logits, exercise MSA attention, or prove tool execution by a running server.
 
 ## Investigation paths
 
@@ -105,4 +113,4 @@ The Maxwell fixture covers a completion containing <think> reasoning, ordinary c
 
 ## Limits
 
-This document maps the Maxwell-specific implementation and immediate integration points. It does not claim a full audit of every unrelated branch change, successful compilation, backend parity, or runtime correctness. The chat fixture is parser-level only; a real Maxwell GGUF and backend execution are required to validate model behavior.
+This document maps the Maxwell-specific implementation and immediate integration points. It does not claim a full audit of every unrelated branch change, successful compilation, backend parity, or runtime correctness. The OpenCL and Hexagon paths were reviewed and, for OpenCL, compiled; neither was run on the matching accelerator. The chat fixture is parser-level only; a real Maxwell GGUF and backend execution are required to validate model behavior.
