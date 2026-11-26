@@ -149,6 +149,10 @@ public:
 private:
     llama_kv_cache_msa * kv;
 
+    // set for the full-size context used to reserve graphs: an empty cache would otherwise size the
+    // position-indexed tensors by the (zero) positions of the reserve ubatch and hide the worst case
+    bool full = false;
+
     // the index of the next ubatch to process
     size_t i_next = 0;
 
