@@ -34,7 +34,7 @@ MTP conversion is explicit: accepted MTP tensor names are enumerated and optiona
 - src/llama-arch.cpp: architecture-name mapping and GGUF-key-to-hyperparameter mapping.
 - src/llama-model-saver.cpp: writes model metadata, including the dense-context field.
 
-The Maxwell metadata key attention.indexer.dense_context is carried into hparams.indexer_dense_context. The converter defaults it to 16,384 tokens when the source configuration does not provide a value. This value chooses the attention mask; it does not disable indexer graph construction.
+The Maxwell metadata key attention.indexer.dense_context is carried into hparams.indexer_dense_context. The converter defaults it to 16,384 tokens when the source configuration does not provide a value. This value chooses the attention mask and skips indexer routing construction for dense-prefix queries; indexer keys are still cached for later sparse queries.
 
 **Required GGUF metadata for paper-compatible dense prefix.** Both the target GGUF and the standalone MTP draft GGUF must contain `maxwell-moe.attention.indexer.dense_context=16384` for Maxwell-V1-Flash. The conversion output must be checked for both files; the observed MTP output omitted this key, so do not assume the target's metadata is automatically present in the draft. If either GGUF is missing the key or has a value that is not read, the loader falls back to sparse attention from the first token (no dense prefix). This fallback is not paper-compatible. Rebuild the affected GGUF with the required metadata and verify the key/value in its metadata dump.
 
@@ -62,7 +62,7 @@ This is the central implementation file.
 
 **Indexer and mask construction.** The graph projects and normalizes indexer queries/keys, computes query/key scores in bounded chunks, accumulates scores in F32, scales by inverse square root of indexer head size, and max-pools token scores into block scores. It applies the remote-position mask, selects top-k remote blocks, and combines them with configured prefix and local blocks. The resulting per-KV-head mask is the visibility map passed to attention.
 
-**Dense-context gate.** The graph uses actual input token positions. Positions before indexer_dense_context select the dense causal mask; positions at or beyond it select the sparse indexer mask. The gate is combined with finite dense/sparse masks before attention. The sparse route is still constructed for dense-prefix positions; this does not save indexer scoring or top-k work for those positions.
+**Dense-context gate.** The graph uses actual input token positions. Positions before indexer_dense_context select the dense causal mask; positions at or beyond it select the sparse indexer mask. The gate is combined with finite dense/sparse masks before attention. Dense-prefix positions bypass indexer scoring and top-k construction. Sparse routing begins at the configured dense-context boundary.
 
 **Attention tensor layout.** K/V are permuted to [D, n_kv, 1, n_head_kv]; the mask is reshaped to [n_kv, n_q, 1, n_head_kv] and converted to F16 for FlashAttention. GQA group size is derived from tensor dimensions before the standard MSA FlashAttention builder is called. The implementation applies a sparse mask to attention; it does not implement sparse KV-row execution, so the backend may still evaluate the full KV axis.
 
@@ -70,7 +70,7 @@ This is the central implementation file.
 
 ### src/llama-graph.cpp
 
-Owns generic graph-input preparation and graph reuse. For Maxwell, it fills the dense-context gate from ubatch->pos[i] < dense_context, provides MSA indexer inputs (slot indices, valid-slot mask, block mapping, prefix/local settings, and remote mask), and checks gate dimensions when deciding whether a graph can be reused. The gate follows actual batch positions rather than assuming a fixed prompt boundary.
+Owns generic graph-input preparation and graph reuse. For Maxwell, it records each query's dense/sparse route from its token position, provides MSA indexer inputs only when a batch contains sparse queries, and checks the route signature when deciding whether a graph can be reused. The gate follows actual batch positions rather than assuming a fixed prompt boundary.
 
 ### src/llama-graph.h
 

@@ -383,6 +383,9 @@ uint64_t llama_model_maxwell_moe::graph_nodes_extra(uint32_t n_ubatch, uint32_t 
     const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1)/query_chunk_size + std::min(n_seq_max, n_ubatch);
     const uint64_t n_key_chunks   = (n_ctx_seq + key_chunk_size - 1)/key_chunk_size;
 
+    // One dense/sparse boundary split can add at most one chunk per sequence.
+    const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1)/query_chunk_size + n_seq_max;
+
     return uint64_t(hparams.n_layer_all)*n_query_chunks*(n_key_chunks*nodes_per_key_chunk + nodes_per_query_chunk);
 }
 
@@ -397,6 +400,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             ? 1.0f/sqrtf(float(n_embd_head))
             : hparams.f_attention_scale;
 
+    GGML_ASSERT(ubatch.n_pos == 1 && "Maxwell indexer routing expects one position per token");
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
     GGML_ASSERT(n_embd_head == n_rot);
 
@@ -463,7 +467,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             // so graph reuse is invalidated exactly when a batch crosses the dense-context boundary.
             const auto is_sparse_query = [&](int64_t token_idx) {
                 return hparams.indexer_dense_context == 0 ||
-                        ubatch.pos[token_idx] >= (llama_pos) hparams.indexer_dense_context;
+                        ubatch.pos[token_idx * ubatch.n_pos] >= (llama_pos) hparams.indexer_dense_context;
             };
 
             bool has_sparse_queries = false;

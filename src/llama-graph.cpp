@@ -773,9 +773,9 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
         mctx_msa->get_idx()->set_input_k_idxs(self_k_idxs_idx, ubatch);
     }
 
-    bool has_sparse_queries = indexer_sparse_queries.empty();
+    bool has_sparse_queries = false;
     for (uint32_t i = 0; !has_sparse_queries && i < ubatch->n_tokens; ++i) {
-        has_sparse_queries = ubatch->pos[i] >= (llama_pos) hparams.indexer_dense_context;
+        has_sparse_queries = ubatch->pos[i * ubatch->n_pos] >= (llama_pos) hparams.indexer_dense_context;
     }
 
     // Dense-only batches still write indexer keys for future sparse decoding, but do not
@@ -839,7 +839,7 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
             res = false;
         } else {
             for (uint32_t i = 0; i < params.ubatch.n_tokens; ++i) {
-                const bool is_sparse = params.ubatch.pos[i] >= (llama_pos) hparams.indexer_dense_context;
+                const bool is_sparse = params.ubatch.pos[i * params.ubatch.n_pos] >= (llama_pos) hparams.indexer_dense_context;
                 if (indexer_sparse_queries[i] != (uint8_t) is_sparse) {
                     res = false;
                     break;
@@ -3231,7 +3231,8 @@ ggml_tensor * llm_graph_context::build_attn_msa_fa(
             + hparams.indexer_top_k) * hparams.indexer_block_size;
     const int64_t n_kv_max = use_sparse
             ? std::min<int64_t>(k->ne[1], n_sparse_kv)
-            : k->ne[1];
+            : std::min<int64_t>(k->ne[1],
+                    std::max<int64_t>(hparams.indexer_dense_context, n_sparse_kv));
     GGML_ASSERT(n_kv_max > 0);
     ggml_flash_attn_ext_set_n_kv_max(o, static_cast<int32_t>(n_kv_max));
 
@@ -4180,7 +4181,7 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
             inp->indexer_sparse_queries.resize(ubatch.n_tokens);
             for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
                 inp->indexer_sparse_queries[i] =
-                        ubatch.pos[i] >= (llama_pos) hparams.indexer_dense_context;
+                        ubatch.pos[i * ubatch.n_pos] >= (llama_pos) hparams.indexer_dense_context;
             }
         }
     }
