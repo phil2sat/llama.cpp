@@ -1353,7 +1353,15 @@ struct llm_graph_context {
             ggml_tensor * k,
             ggml_tensor * v,
             ggml_tensor * mask,
-            int64_t Gp, float kq_scale, bool use_sparse = false, int il) const;
+            int64_t Gp, float kq_scale, bool use_sparse, int il) const;
+
+    // Compatibility overload for existing dense MSA attention callers.
+    ggml_tensor * build_attn_msa_fa(
+            ggml_tensor * q_cur,
+            ggml_tensor * k,
+            ggml_tensor * v,
+            ggml_tensor * mask,
+            int64_t Gp, float kq_scale, int il) const;
 
     ggml_tensor * build_attn_mha(
             ggml_tensor * q,       // [n_embd_head_q, n_head_q, n_tokens]

@@ -3206,6 +3206,15 @@ ggml_tensor * llm_graph_context::build_attn_msa_fa(
         ggml_tensor * k,
         ggml_tensor * v,
         ggml_tensor * mask,
+        int64_t Gp, float kq_scale, int il) const {
+    return build_attn_msa_fa(q_cur, k, v, mask, Gp, kq_scale, false, il);
+}
+
+ggml_tensor * llm_graph_context::build_attn_msa_fa(
+        ggml_tensor * q_cur,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * mask,
         int64_t Gp, float kq_scale, bool use_sparse, int il) const {
     const int64_t D  = q_cur->ne[0];
     const int64_t HQ = q_cur->ne[1];
