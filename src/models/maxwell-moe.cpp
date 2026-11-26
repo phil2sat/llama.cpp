@@ -613,6 +613,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                 token_offset*indexer_q->nb[2]);
 
                         std::vector<ggml_tensor *> score_chunks;
+                        bool groups_before_queries = false; // score layout of the prompt-processing branch
 
                         const float score_scale = 1.0f/sqrtf(float(hparams.indexer_head_size));
 
@@ -668,6 +669,15 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                     k_pos->nb[1], k_pos->nb[2], k_pos->nb[3],
                                     stream*k_pos->nb[3]);
 
+                            // One matrix product per key chunk with all groups and queries as columns:
+                            // [head_size, groups*queries]. With the queries as a batch dimension ggml_mul_mat runs
+                            // one mat-vec per query, each re-reading the whole key chunk. The score scale is folded
+                            // into the (tiny) query matrix instead of scaling every score chunk.
+                            const int64_t n_groups_q = indexer_q_chunk->ne[1];
+                            ggml_tensor * q_scaled = ggml_scale(ctx0, indexer_q_chunk, score_scale);
+                            ggml_tensor * q_cols = ggml_reshape_2d(ctx0, q_scaled,
+                                    q_scaled->ne[0], n_groups_q*query_count);
+
                             for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
                                 const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
                                 ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_pos_stream,
@@ -676,11 +686,10 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                         indexer_k_pos_stream->nb[3],
                                         key_start*indexer_k_pos_stream->nb[1]);
 
-                                // [key_count, groups, queries] -> [key_count, queries, groups]
-                                ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
+                                // [key_count, groups*queries] -> [key_count, groups, queries], contiguous
+                                ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, q_cols);
                                 ggml_prec_set_acc(token_scores, GGML_PREC_F32);
-                                token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
-                                token_scores = ggml_scale(ctx0, token_scores, score_scale);
+                                token_scores = ggml_reshape_3d(ctx0, token_scores, key_count, n_groups_q, query_count);
 
                                 ggml_tensor * valid_chunk = ggml_view_4d(ctx0, valid_stream,
                                         key_count, 1, 1, 1,
@@ -688,6 +697,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                         key_start*valid_stream->nb[0]);
                                 token_scores = ggml_add(ctx0, token_scores, valid_chunk);
 
+                                // -> [key_count/block_size, groups, queries]
                                 ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
                                         hparams.indexer_block_size, 1,
                                         hparams.indexer_block_size, 1, 0, 0);
@@ -695,6 +705,7 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
                                 score_chunks.push_back(pooled);
                             }
+                            groups_before_queries = true;
                         }
 
                         // A balanced concatenation tree keeps total copied score elements
@@ -712,6 +723,10 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             score_chunks = std::move(merged);
                         }
                         ggml_tensor * block_scores = score_chunks.front();
+                        if (groups_before_queries) {
+                            // [n_blocks, groups, queries] -> [n_blocks, queries, groups]
+                            block_scores = ggml_cont(ctx0, ggml_permute(ctx0, block_scores, 0, 2, 1, 3));
+                        }
 
                         if (!ci.remote_mask) {
                             ci.remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
