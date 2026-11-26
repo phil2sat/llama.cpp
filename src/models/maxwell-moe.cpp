@@ -646,8 +646,9 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             scores = ggml_get_rows(ctx0, scores, pos_slot_stream);
                             scores = ggml_reshape_3d(ctx0, scores, n_groups_q, query_count, n_pos);
 
-                            // -> [n_pos, queries, groups]
-                            ggml_tensor * token_scores = ggml_permute(ctx0, scores, 2, 1, 0, 3);
+                            // -> [n_pos, queries, groups]; ggml_scale needs contiguous rows, which the permuted
+                            // view does not have (the copy is groups*queries*n_pos floats)
+                            ggml_tensor * token_scores = ggml_cont(ctx0, ggml_permute(ctx0, scores, 2, 1, 0, 3));
                             token_scores = ggml_scale(ctx0, token_scores, score_scale);
                             token_scores = ggml_add(ctx0, token_scores, valid_stream);
 
