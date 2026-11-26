@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <stdexcept>
+#include <vector>
 
 // Maxwell MoE (maxwell-model/Maxwell-V1-Flash): GQA with per-head QK-norm, leading dense FFN layers, then
 // sigmoid-routed experts with a selection bias plus one shared expert, all wrapped in DeepSeek-V4 style mHC
@@ -602,9 +603,10 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                 indexer_q->nb[1], indexer_q->nb[2],
                                 token_offset*indexer_q->nb[2]);
 
-                        ggml_tensor * block_scores = nullptr;
+                        std::vector<ggml_tensor *> score_chunks;
 
-                        // Bound the score temporary to key_chunk_size * query_count * groups.
+                        // Bound score temporaries to key_chunk_size * query_count * groups.
+                        // Reduce chunks pairwise below to avoid repeatedly copying the growing prefix.
                         for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
                             const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
                             ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_stream,
@@ -631,10 +633,24 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                     hparams.indexer_block_size, 1, 0, 0);
                             cb(pooled, "indexer_block_scores", il);
 
-                            block_scores = block_scores
-                                    ? ggml_concat(ctx0, block_scores, pooled, 0)
-                                    : pooled;
+                            score_chunks.push_back(pooled);
                         }
+
+                        // A balanced concatenation tree keeps total copied score elements
+                        // proportional to the full score tensor instead of quadratic in chunk count.
+                        while (score_chunks.size() > 1) {
+                            std::vector<ggml_tensor *> merged;
+                            merged.reserve((score_chunks.size() + 1) / 2);
+                            for (size_t i = 0; i < score_chunks.size(); i += 2) {
+                                if (i + 1 < score_chunks.size()) {
+                                    merged.push_back(ggml_concat(ctx0, score_chunks[i], score_chunks[i + 1], 0));
+                                } else {
+                                    merged.push_back(score_chunks[i]);
+                                }
+                            }
+                            score_chunks = std::move(merged);
+                        }
+                        ggml_tensor * block_scores = score_chunks.front();
 
                         if (!ci.remote_mask) {
                             ci.remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
