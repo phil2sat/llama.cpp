@@ -278,7 +278,16 @@ llama_model_maxwell_moe::graph::hc_pre llama_model_maxwell_moe::graph::build_hc_
     // the reference scales the projection by 1/(rms + eps), not by 1/sqrt(ms + eps): the streams start at
     // the scale of the token embeddings, where the two differ
     ggml_tensor * flat = ggml_reshape_2d(ctx0, x, hc_dim, nt);
-    ggml_tensor * rms  = ggml_sqrt(ctx0, ggml_mean(ctx0, ggml_sqr(ctx0, flat)));
+    ggml_tensor * rms  = nullptr;
+    if (nt == 1) {
+        // decode: a single row of hc_dim values. ggml_mean over one row runs as a single small workgroup on
+        // Vulkan (~65 us per call, twice per layer), so take the sum of squares as a f32 dot product instead,
+        // which the mat-vec kernels spread over the whole row. Same value, different summation order.
+        ggml_tensor * sumsq = ggml_mul_mat(ctx0, flat, flat);
+        rms = ggml_sqrt(ctx0, ggml_scale(ctx0, sumsq, 1.0f/(float) hc_dim));
+    } else {
+        rms = ggml_sqrt(ctx0, ggml_mean(ctx0, ggml_sqr(ctx0, flat)));
+    }
     ggml_tensor * mixes = ggml_mul_mat(ctx0, hc_fn, flat);
     mixes = ggml_div(ctx0, mixes, ggml_scale_bias(ctx0, rms, 1.0f, hparams.dsv4_hc_eps));
     cb(mixes, "hc_mixes", il);
