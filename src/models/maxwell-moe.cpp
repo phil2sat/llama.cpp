@@ -379,12 +379,10 @@ uint64_t llama_model_maxwell_moe::graph_nodes_extra(uint32_t n_ubatch, uint32_t 
     constexpr uint64_t nodes_per_key_chunk   = 12;
     constexpr uint64_t nodes_per_query_chunk = 64;
 
-    // a ubatch holds either many tokens of one stream or one token of many streams
-    const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1)/query_chunk_size + std::min(n_seq_max, n_ubatch);
-    const uint64_t n_key_chunks   = (n_ctx_seq + key_chunk_size - 1)/key_chunk_size;
-
+    // A ubatch holds either many tokens of one stream or one token of many streams.
     // One dense/sparse boundary split can add at most one chunk per sequence.
     const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1)/query_chunk_size + n_seq_max;
+    const uint64_t n_key_chunks   = (n_ctx_seq + key_chunk_size - 1)/key_chunk_size;
 
     return uint64_t(hparams.n_layer_all)*n_query_chunks*(n_key_chunks*nodes_per_key_chunk + nodes_per_query_chunk);
 }
