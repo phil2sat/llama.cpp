@@ -13,8 +13,8 @@
 // The reference attention is block-sparse GQA (MBSA): per KV group, 8 prefix + 8 local 128-token blocks plus
 // 16 remote blocks selected by block-max scores from the learned indexer. The graph builds that route in
 // bounded query/key chunks and applies its group-specific mask to the standard GQA attention operation.
-// The mask is sparse, but the current attention backend still evaluates the full KV axis; KV-row execution
-// is a separate optimization.
+// Dense-context queries bypass block routing; sparse queries pass a bounded KV hint to Flash Attention,
+// which can compact the mask when the selected KV ratio is profitable.
 
 void llama_model_maxwell_moe::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,        hparams.f_norm_rms_eps);
@@ -459,14 +459,34 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             cb(Kcur, "Kcur", il);
             cb(Vcur, "Vcur", il);
 
-            // Project the shared indexer key and the per-KV-group indexer queries.
-            ggml_tensor * indexer_q = build_lora_mm(layer.index_q_proj, cur);
-            indexer_q = ggml_reshape_3d(ctx0, indexer_q,
-                    hparams.indexer_head_size, hparams.indexer_n_head, n_tokens);
-            indexer_q = build_norm(indexer_q, layer.index_q_norm, nullptr, LLM_NORM_RMS, il);
-            indexer_q = build_rope_indexer(indexer_q, inp_pos, il);
-            cb(indexer_q, "indexer_q", il);
+            // Route queries by their absolute position. The graph input records this classification
+            // so graph reuse is invalidated exactly when a batch crosses the dense-context boundary.
+            const auto is_sparse_query = [&](int64_t token_idx) {
+                return hparams.indexer_dense_context == 0 ||
+                        ubatch.pos[token_idx] >= (llama_pos) hparams.indexer_dense_context;
+            };
 
+            bool has_sparse_queries = false;
+            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+                if (is_sparse_query(i)) {
+                    has_sparse_queries = true;
+                    break;
+                }
+            }
+
+            // Project the indexer query only when at least one query needs block routing.
+            ggml_tensor * indexer_q = nullptr;
+            if (has_sparse_queries) {
+                indexer_q = build_lora_mm(layer.index_q_proj, cur);
+                indexer_q = ggml_reshape_3d(ctx0, indexer_q,
+                        hparams.indexer_head_size, hparams.indexer_n_head, n_tokens);
+                indexer_q = build_norm(indexer_q, layer.index_q_norm, nullptr, LLM_NORM_RMS, il);
+                indexer_q = build_rope_indexer(indexer_q, inp_pos, il);
+                cb(indexer_q, "indexer_q", il);
+            }
+
+            // Indexer keys must still be written during the dense prefix so sparse decoding
+            // can start without rebuilding the KV cache at indexer_dense_context.
             ggml_tensor * indexer_k = build_lora_mm(layer.index_k_proj, cur);
             indexer_k = build_norm(indexer_k, layer.index_k_norm, nullptr, LLM_NORM_RMS, il);
             indexer_k = ggml_reshape_3d(ctx0, indexer_k, hparams.indexer_head_size, 1, n_tokens);
@@ -496,26 +516,28 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             GGML_ASSERT(n_tokens % n_stream == 0);
             GGML_ASSERT(n_indexer_groups == n_head_kv);
 
-            // Convert the indexer cache from cache-cell order to token-position order.
-            ggml_tensor * indexer_pos_slot = ggml_reshape_3d(
-                    ctx0, inp_attn->indexer_pos_slot, n_pos, 1, n_stream);
-            ggml_tensor * indexer_k_cache = ggml_permute(ctx0, mctx_idx->get_k(ctx0, il), 0, 2, 1, 3);
+            ggml_tensor * indexer_k_pos = nullptr;
+            if (has_sparse_queries) {
+                // Convert the indexer cache from cache-cell order to token-position order.
+                ggml_tensor * indexer_pos_slot = ggml_reshape_3d(
+                        ctx0, inp_attn->indexer_pos_slot, n_pos, 1, n_stream);
+                ggml_tensor * indexer_k_cache = ggml_permute(ctx0, mctx_idx->get_k(ctx0, il), 0, 2, 1, 3);
 
-            // The cache is allocated for n_seq_max streams, while this ubatch can use fewer.
-            // ggml_get_rows requires the cache stream dimension to match the index tensor.
-            GGML_ASSERT(n_stream <= indexer_k_cache->ne[3]);
-            indexer_k_cache = ggml_view_4d(ctx0, indexer_k_cache,
-                    indexer_k_cache->ne[0], indexer_k_cache->ne[1],
-                    indexer_k_cache->ne[2], n_stream,
-                    indexer_k_cache->nb[1], indexer_k_cache->nb[2],
-                    indexer_k_cache->nb[3], 0);
+                // The cache is allocated for n_seq_max streams, while this ubatch can use fewer.
+                // ggml_get_rows requires the cache stream dimension to match the index tensor.
+                GGML_ASSERT(n_stream <= indexer_k_cache->ne[3]);
+                indexer_k_cache = ggml_view_4d(ctx0, indexer_k_cache,
+                        indexer_k_cache->ne[0], indexer_k_cache->ne[1],
+                        indexer_k_cache->ne[2], n_stream,
+                        indexer_k_cache->nb[1], indexer_k_cache->nb[2],
+                        indexer_k_cache->nb[3], 0);
 
-            ggml_tensor * indexer_k_pos = ggml_get_rows(ctx0, indexer_k_cache, indexer_pos_slot);
-            cb(indexer_k_pos, "indexer_k_pos", il);
+                indexer_k_pos = ggml_get_rows(ctx0, indexer_k_cache, indexer_pos_slot);
+                cb(indexer_k_pos, "indexer_k_pos", il);
+            }
 
             ggml_tensor * k_cache = mctx_base->get_k(ctx0, il);
             ggml_tensor * v_cache = mctx_base->get_v(ctx0, il);
-
             ggml_tensor * stream_outputs = nullptr;
 
             for (int64_t stream = 0; stream < n_stream; ++stream) {
@@ -530,71 +552,38 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                         v_cache->nb[1], v_cache->nb[2], v_cache->nb[3],
                         stream*v_cache->nb[3]);
 
-                ggml_tensor * indexer_k_stream = ggml_view_4d(ctx0, indexer_k_pos,
-                        indexer_k_pos->ne[0], indexer_k_pos->ne[1], 1, 1,
-                        indexer_k_pos->nb[1], indexer_k_pos->nb[2], indexer_k_pos->nb[3],
-                        stream*indexer_k_pos->nb[3]);
-                ggml_tensor * indexer_valid_stream = ggml_view_4d(ctx0, inp_attn->indexer_pos_valid,
-                        n_pos, 1, 1, 1,
-                        inp_attn->indexer_pos_valid->nb[1],
-                        inp_attn->indexer_pos_valid->nb[1],
-                        inp_attn->indexer_pos_valid->nb[1],
-                        stream*inp_attn->indexer_pos_valid->nb[1]);
+                ggml_tensor * indexer_k_stream = nullptr;
+                ggml_tensor * indexer_valid_stream = nullptr;
+                if (has_sparse_queries) {
+                    indexer_k_stream = ggml_view_4d(ctx0, indexer_k_pos,
+                            indexer_k_pos->ne[0], indexer_k_pos->ne[1], 1, 1,
+                            indexer_k_pos->nb[1], indexer_k_pos->nb[2], indexer_k_pos->nb[3],
+                            stream*indexer_k_pos->nb[3]);
 
-                for (int64_t query_start = 0; query_start < n_tokens_per_stream; query_start += query_chunk_size) {
-                    const int64_t query_count = std::min<int64_t>(
-                            query_chunk_size, n_tokens_per_stream - query_start);
+                    indexer_valid_stream = ggml_view_4d(ctx0, inp_attn->indexer_pos_valid,
+                            n_pos, 1, 1, 1,
+                            inp_attn->indexer_pos_valid->nb[1],
+                            inp_attn->indexer_pos_valid->nb[1],
+                            inp_attn->indexer_pos_valid->nb[1],
+                            stream*inp_attn->indexer_pos_valid->nb[1]);
+                }
+
+                for (int64_t query_start = 0; query_start < n_tokens_per_stream;) {
                     const int64_t token_offset = stream*n_tokens_per_stream + query_start;
+                    const int64_t query_limit = std::min<int64_t>(
+                            query_chunk_size, n_tokens_per_stream - query_start);
+                    const bool use_sparse = is_sparse_query(token_offset);
 
-                    ggml_tensor * indexer_q_chunk = ggml_view_3d(ctx0, indexer_q,
-                            indexer_q->ne[0], indexer_q->ne[1], query_count,
-                            indexer_q->nb[1], indexer_q->nb[2],
-                            token_offset*indexer_q->nb[2]);
-
-                    ggml_tensor * block_scores = nullptr;
-
-                    // Bound the score temporary to key_chunk_size * query_count * groups.
-                    for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
-                        const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
-                        ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_stream,
-                                indexer_k_stream->ne[0], key_count, 1, 1,
-                                indexer_k_stream->nb[1], indexer_k_stream->nb[2], indexer_k_stream->nb[3],
-                                key_start*indexer_k_stream->nb[1]);
-
-                        ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
-                        ggml_prec_set_acc(token_scores, GGML_PREC_F32);
-                        token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
-                        token_scores = ggml_scale(ctx0, token_scores,
-                                1.0f/sqrtf(float(hparams.indexer_head_size)));
-
-                        ggml_tensor * valid_chunk = ggml_view_4d(ctx0, indexer_valid_stream,
-                                key_count, 1, 1, 1,
-                                indexer_valid_stream->nb[1],
-                                indexer_valid_stream->nb[2],
-                                indexer_valid_stream->nb[3],
-                                key_start*indexer_valid_stream->nb[0]);
-                        token_scores = ggml_add(ctx0, token_scores, valid_chunk);
-
-                        ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
-                                hparams.indexer_block_size, 1,
-                                hparams.indexer_block_size, 1, 0, 0);
-                        cb(pooled, "indexer_block_scores", il);
-
-                        block_scores = block_scores
-                                ? ggml_concat(ctx0, block_scores, pooled, 0)
-                                : pooled;
+                    // Do not make dense queries pay for routing just because the same ubatch
+                    // also contains queries beyond the dense-context boundary.
+                    int64_t query_count = 1;
+                    while (query_count < query_limit &&
+                            is_sparse_query(token_offset + query_count) == use_sparse) {
+                        ++query_count;
                     }
 
                     msa_chunk_inputs & ci = chunk_inputs[{stream, query_start}];
                     if (!ci.base_mask) {
-                        ci.remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
-                                n_blocks, query_count, 1, 1,
-                                inp_attn->indexer_remote_mask->nb[1],
-                                inp_attn->indexer_remote_mask->nb[2],
-                                inp_attn->indexer_remote_mask->nb[3],
-                                stream*inp_attn->indexer_remote_mask->nb[3]
-                                    + query_start*inp_attn->indexer_remote_mask->nb[1]);
-
                         ci.base_mask = ggml_view_4d(ctx0, inp_attn->self_attn_mask.raw,
                                 inp_attn->self_attn_mask.raw->ne[0], query_count, 1, 1,
                                 inp_attn->self_attn_mask.raw->nb[1],
@@ -602,83 +591,108 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                                 inp_attn->self_attn_mask.raw->nb[3],
                                 stream*inp_attn->self_attn_mask.raw->nb[3]
                                     + query_start*inp_attn->self_attn_mask.raw->nb[1]);
+                    }
 
-                        const int64_t n_extra_chunk =
-                                (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)
-                                * hparams.indexer_block_size;
-                        ci.extra = ggml_view_4d(ctx0, inp_attn->indexer_extra,
-                                n_extra_chunk, query_count, 1, 1,
-                                inp_attn->indexer_extra->nb[1],
-                                inp_attn->indexer_extra->nb[2],
-                                inp_attn->indexer_extra->nb[3],
-                                stream*inp_attn->indexer_extra->nb[3]
-                                    + query_start*inp_attn->indexer_extra->nb[1]);
+                    ggml_tensor * attn_mask = ci.base_mask;
+                    if (use_sparse) {
+                        ggml_tensor * indexer_q_chunk = ggml_view_3d(ctx0, indexer_q,
+                                indexer_q->ne[0], indexer_q->ne[1], query_count,
+                                indexer_q->nb[1], indexer_q->nb[2],
+                                token_offset*indexer_q->nb[2]);
 
-                        if (inp_attn->indexer_dense_gate) {
-                            ci.gate = ggml_view_4d(ctx0, inp_attn->indexer_dense_gate,
-                                    1, query_count, 1, 1,
-                                    inp_attn->indexer_dense_gate->nb[1],
-                                    inp_attn->indexer_dense_gate->nb[2],
-                                    inp_attn->indexer_dense_gate->nb[3],
-                                    stream*inp_attn->indexer_dense_gate->nb[3]
-                                        + query_start*inp_attn->indexer_dense_gate->nb[1]);
+                        ggml_tensor * block_scores = nullptr;
+
+                        // Bound the score temporary to key_chunk_size * query_count * groups.
+                        for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
+                            const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
+                            ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_stream,
+                                    indexer_k_stream->ne[0], key_count, 1, 1,
+                                    indexer_k_stream->nb[1], indexer_k_stream->nb[2], indexer_k_stream->nb[3],
+                                    key_start*indexer_k_stream->nb[1]);
+
+                            ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
+                            ggml_prec_set_acc(token_scores, GGML_PREC_F32);
+                            token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
+                            token_scores = ggml_scale(ctx0, token_scores,
+                                    1.0f/sqrtf(float(hparams.indexer_head_size)));
+
+                            ggml_tensor * valid_chunk = ggml_view_4d(ctx0, indexer_valid_stream,
+                                    key_count, 1, 1, 1,
+                                    indexer_valid_stream->nb[1],
+                                    indexer_valid_stream->nb[1],
+                                    indexer_valid_stream->nb[1],
+                                    key_start*indexer_valid_stream->nb[0]);
+                            token_scores = ggml_add(ctx0, token_scores, valid_chunk);
+
+                            ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
+                                    hparams.indexer_block_size, 1,
+                                    hparams.indexer_block_size, 1, 0, 0);
+                            cb(pooled, "indexer_block_scores", il);
+
+                            block_scores = block_scores
+                                    ? ggml_concat(ctx0, block_scores, pooled, 0)
+                                    : pooled;
                         }
-                    }
-                    ggml_tensor * remote_mask = ci.remote_mask;
-                    block_scores = ggml_add(ctx0, block_scores, remote_mask);
-                    cb(block_scores, "indexer_remote_scores", il);
 
-                    ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, block_scores, n_top_k));
-                    cb(top_k, "indexer_top_k", il);
+                        if (!ci.remote_mask) {
+                            ci.remote_mask = ggml_view_4d(ctx0, inp_attn->indexer_remote_mask,
+                                    n_blocks, query_count, 1, 1,
+                                    inp_attn->indexer_remote_mask->nb[1],
+                                    inp_attn->indexer_remote_mask->nb[2],
+                                    inp_attn->indexer_remote_mask->nb[3],
+                                    stream*inp_attn->indexer_remote_mask->nb[3]
+                                        + query_start*inp_attn->indexer_remote_mask->nb[1]);
 
-                    ggml_tensor * base_mask = ci.base_mask;
-
-                    ggml_tensor *& blocks = stream_blocks[stream];
-                    if (!blocks) {
-                        blocks = ggml_view_4d(ctx0, inp_attn->indexer_blocks,
-                                hparams.indexer_block_size, n_blocks, 1, 1,
-                                inp_attn->indexer_blocks->nb[1],
-                                inp_attn->indexer_blocks->nb[2],
-                                inp_attn->indexer_blocks->nb[3],
-                                stream*inp_attn->indexer_blocks->nb[3]);
-                    }
-
-                    ggml_tensor * extra = ci.extra;
-
-                    ggml_tensor * sparse_mask = ggml_top_k_mask(
-                            ctx0, base_mask, top_k, block_scores, blocks, extra);
-
-                    // Dense-context queries use the causal mask; later queries keep the block-sparse route.
-                    if (inp_attn->indexer_dense_gate) {
-                        ggml_tensor * gate = ci.gate;
-
-                        // Keep masked values finite: multiplying -inf by a zero gate would produce NaN.
-                        // Blend in the mask type: sparse - gate*(sparse - dense). The dense mask has one head only.
-                        constexpr float mask_floor = -30000.0f;
-                        if (gate->type != sparse_mask->type) {
-                            gate = ggml_cast(ctx0, gate, sparse_mask->type);
+                            const int64_t n_extra_chunk =
+                                    (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)
+                                    * hparams.indexer_block_size;
+                            ci.extra = ggml_view_4d(ctx0, inp_attn->indexer_extra,
+                                    n_extra_chunk, query_count, 1, 1,
+                                    inp_attn->indexer_extra->nb[1],
+                                    inp_attn->indexer_extra->nb[2],
+                                    inp_attn->indexer_extra->nb[3],
+                                    stream*inp_attn->indexer_extra->nb[3]
+                                        + query_start*inp_attn->indexer_extra->nb[1]);
                         }
-                        ggml_tensor * sparse_finite = ggml_clamp(ctx0, sparse_mask, mask_floor, 0.0f);
-                        ggml_tensor * dense_finite  = ggml_clamp(ctx0, base_mask,   mask_floor, 0.0f);
-                        ggml_tensor * delta = ggml_mul(ctx0, ggml_sub(ctx0, sparse_finite, dense_finite), gate);
-                        sparse_mask = ggml_sub(ctx0, sparse_finite, delta);
+
+                        block_scores = ggml_add(ctx0, block_scores, ci.remote_mask);
+                        cb(block_scores, "indexer_remote_scores", il);
+
+                        ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, block_scores, n_top_k));
+                        cb(top_k, "indexer_top_k", il);
+
+                        ggml_tensor *& blocks = stream_blocks[stream];
+                        if (!blocks) {
+                            blocks = ggml_view_4d(ctx0, inp_attn->indexer_blocks,
+                                    hparams.indexer_block_size, n_blocks, 1, 1,
+                                    inp_attn->indexer_blocks->nb[1],
+                                    inp_attn->indexer_blocks->nb[2],
+                                    inp_attn->indexer_blocks->nb[3],
+                                    stream*inp_attn->indexer_blocks->nb[3]);
+                        }
+
+                        attn_mask = ggml_top_k_mask(
+                                ctx0, ci.base_mask, top_k, block_scores, blocks, ci.extra);
+                        cb(attn_mask, "maxwell_sparse_mask", il);
+                    } else {
+                        // The base causal mask is shared across KV groups; repeat it to match
+                        // the per-group mask layout expected by grouped Flash Attention.
+                        attn_mask = ggml_repeat_4d(ctx0, ci.base_mask,
+                                ci.base_mask->ne[0], ci.base_mask->ne[1],
+                                n_indexer_groups, 1);
+                        cb(attn_mask, "maxwell_dense_mask", il);
                     }
-                    cb(sparse_mask, "maxwell_sparse_mask", il);
 
                     ggml_tensor * q_chunk = ggml_view_3d(ctx0, Qcur,
                             Qcur->ne[0], Qcur->ne[1], query_count,
                             Qcur->nb[1], Qcur->nb[2],
                             token_offset*Qcur->nb[2]);
 
-                    // Every KV group becomes a channel (ne[3]) of the attention op, so that the group's own sparse
-                    // mask lines up with the KV head that the query heads of the group read:
-                    // k, v [D, n_head_kv, n_kv, 1] -> [D, n_kv, 1, n_head_kv], mask [n_kv, n_q, n_head_kv] -> [n_kv, n_q, 1, n_head_kv]
-                    // The GQA ratio is taken from the tensors, which keeps synthetic test models valid.
+                    // Fold each KV group into Flash Attention's batch dimension.
                     ggml_tensor * k_fa = ggml_permute(ctx0, k_stream, 0, 3, 1, 2);
                     ggml_tensor * v_fa = ggml_permute(ctx0, v_stream, 0, 3, 1, 2);
-                    ggml_tensor * mask_fa = ggml_reshape_4d(ctx0, sparse_mask,
-                            sparse_mask->ne[0], sparse_mask->ne[1], 1, sparse_mask->ne[2]);
-                    // Flash Attention requires an F16 mask, the mask is F32 without -fa
+                    ggml_tensor * mask_fa = ggml_reshape_4d(ctx0, attn_mask,
+                            attn_mask->ne[0], attn_mask->ne[1], 1, attn_mask->ne[2]);
                     if (mask_fa->type != GGML_TYPE_F16) {
                         mask_fa = ggml_cast(ctx0, mask_fa, GGML_TYPE_F16);
                     }
@@ -688,12 +702,14 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                     const int64_t gqa_group_size = q_chunk->ne[1] / k_fa->ne[3];
 
                     ggml_tensor * attn_chunk = build_attn_msa_fa(
-                            q_chunk, k_fa, v_fa, mask_fa, gqa_group_size, kq_scale, il);
-                    cb(attn_chunk, "attn_sparse_chunk", il);
+                            q_chunk, k_fa, v_fa, mask_fa, gqa_group_size, kq_scale, use_sparse, il);
+                    cb(attn_chunk, "attn_chunk", il);
 
                     query_outputs = query_outputs
                             ? ggml_concat(ctx0, query_outputs, attn_chunk, 1)
                             : attn_chunk;
+
+                    query_start += query_count;
                 }
 
                 stream_outputs = stream_outputs

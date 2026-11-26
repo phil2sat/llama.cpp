@@ -772,37 +772,38 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
     if (self_k_idxs_idx) {
         mctx_msa->get_idx()->set_input_k_idxs(self_k_idxs_idx, ubatch);
     }
-    if (indexer_pos_slot) {
-        mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch, self_k_idxs_idx);
+
+    bool has_sparse_queries = indexer_sparse_queries.empty();
+    for (uint32_t i = 0; !has_sparse_queries && i < ubatch->n_tokens; ++i) {
+        has_sparse_queries = ubatch->pos[i] >= (llama_pos) hparams.indexer_dense_context;
     }
-    if (indexer_pos_valid) {
-        mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch, self_k_idxs_idx);
-    }
-    if (indexer_blocks) {
-        mctx_msa->set_input_block_slots(indexer_blocks, ubatch, self_k_idxs, hparams.indexer_block_size);
-    }
-    if (indexer_extra) {
-        mctx_msa->set_input_prefix_local_slots(indexer_extra, ubatch, self_k_idxs,
-                hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
-    }
-    if (indexer_remote_mask) {
-        mctx_msa->set_input_remote_block_mask(indexer_remote_mask, ubatch,
-                hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
-    }
-    if (indexer_dense_gate) {
-        std::vector<float> gate(ubatch->n_tokens);
-        for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
-            const int64_t pos = ubatch->pos[i];
-            gate[i] = pos < (int64_t) hparams.indexer_dense_context ? 1.0f : 0.0f;
+
+    // Dense-only batches still write indexer keys for future sparse decoding, but do not
+    // need any of the position-to-block routing inputs.
+    if (has_sparse_queries) {
+        if (indexer_pos_slot) {
+            mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch, self_k_idxs_idx);
         }
-        ggml_backend_tensor_set(indexer_dense_gate, gate.data(), 0, ggml_nbytes(indexer_dense_gate));
+        if (indexer_pos_valid) {
+            mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch, self_k_idxs_idx);
+        }
+        if (indexer_blocks) {
+            mctx_msa->set_input_block_slots(indexer_blocks, ubatch, self_k_idxs, hparams.indexer_block_size);
+        }
+        if (indexer_extra) {
+            mctx_msa->set_input_prefix_local_slots(indexer_extra, ubatch, self_k_idxs,
+                    hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
+        }
+        if (indexer_remote_mask) {
+            mctx_msa->set_input_remote_block_mask(indexer_remote_mask, ubatch,
+                    hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
+        }
     }
 }
-
 bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
     mctx_msa = static_cast<const llama_kv_cache_msa_context *>(params.mctx);
 
-    // the parent class operates on the base cache context
+    // The parent class operates on the base cache context.
     this->mctx = mctx_msa->get_base();
 
     bool res = true;
@@ -829,11 +830,21 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
         res &= indexer_remote_mask->ne[0] == n_blocks;
         res &= indexer_remote_mask->ne[1] == n_tps;
         res &= indexer_remote_mask->ne[3] == n_stream;
-        if (indexer_dense_gate) {
-            res &= indexer_dense_gate->ne[0] == 1;
-            res &= indexer_dense_gate->ne[1] == n_tps;
-            res &= indexer_dense_gate->ne[2] == 1;
-            res &= indexer_dense_gate->ne[3] == n_stream;
+    }
+
+    // The graph structure differs for dense and sparse queries. Rebuild it if any token
+    // crosses the configured dense-context boundary or changes its route within the batch.
+    if (!indexer_sparse_queries.empty()) {
+        if (indexer_sparse_queries.size() != params.ubatch.n_tokens) {
+            res = false;
+        } else {
+            for (uint32_t i = 0; i < params.ubatch.n_tokens; ++i) {
+                const bool is_sparse = params.ubatch.pos[i] >= (llama_pos) hparams.indexer_dense_context;
+                if (indexer_sparse_queries[i] != (uint8_t) is_sparse) {
+                    res = false;
+                    break;
+                }
+            }
         }
     }
 
@@ -843,7 +854,6 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
 
     return res;
 }
-
 void llm_graph_input_attn_k_dsa::set_input(const llama_ubatch * ubatch) {
     mctx->get_mla()->set_input_k_idxs(self_k_idxs_mla, ubatch);
 
@@ -3196,7 +3206,7 @@ ggml_tensor * llm_graph_context::build_attn_msa_fa(
         ggml_tensor * k,
         ggml_tensor * v,
         ggml_tensor * mask,
-        int64_t Gp, float kq_scale, int il) const {
+        int64_t Gp, float kq_scale, bool use_sparse, int il) const {
     const int64_t D  = q_cur->ne[0];
     const int64_t HQ = q_cur->ne[1];
     const int64_t T  = q_cur->ne[2];
@@ -3215,13 +3225,13 @@ ggml_tensor * llm_graph_context::build_attn_msa_fa(
     ggml_tensor * o = ggml_flash_attn_ext(ctx0, q, k, v, mask, kq_scale,
                                           hparams.f_max_alibi_bias, 0.0f);
 
-    // Bound sparse Flash Attention work by the largest possible finite-mask row.
-    // Dense-context queries retain the full causal prefix; later queries use selected
-    // remote blocks plus the mandatory prefix and local blocks.
+    // Dense queries use the full causal KV range. Sparse queries are bounded by
+    // the selected remote blocks plus the mandatory prefix and local blocks.
     const int64_t n_sparse_kv = (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks
             + hparams.indexer_top_k) * hparams.indexer_block_size;
-    const int64_t n_kv_max = std::min<int64_t>(k->ne[1],
-            std::max<int64_t>(hparams.indexer_dense_context, n_sparse_kv));
+    const int64_t n_kv_max = use_sparse
+            ? std::min<int64_t>(k->ne[1], n_sparse_kv)
+            : k->ne[1];
     GGML_ASSERT(n_kv_max > 0);
     ggml_flash_attn_ext_set_n_kv_max(o, static_cast<int32_t>(n_kv_max));
 
@@ -4167,9 +4177,11 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
         ggml_set_name(inp->indexer_remote_mask, "indexer_remote_mask");
 
         if (hparams.indexer_dense_context > 0) {
-            inp->indexer_dense_gate = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, n_tps, 1, n_stream);
-            ggml_set_input(inp->indexer_dense_gate);
-            ggml_set_name(inp->indexer_dense_gate, "indexer_dense_gate");
+            inp->indexer_sparse_queries.resize(ubatch.n_tokens);
+            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+                inp->indexer_sparse_queries[i] =
+                        ubatch.pos[i] >= (llama_pos) hparams.indexer_dense_context;
+            }
         }
     }
 
