@@ -519,24 +519,21 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
             GGML_ASSERT(n_tokens % n_stream == 0);
             GGML_ASSERT(n_indexer_groups == n_head_kv);
 
-            ggml_tensor * indexer_k_pos = nullptr;
+            ggml_tensor * indexer_k_cache = nullptr;
+            ggml_tensor * indexer_pos_slot = nullptr;
             if (has_sparse_queries) {
-                // Convert the indexer cache from cache-cell order to token-position order.
-                ggml_tensor * indexer_pos_slot = ggml_reshape_3d(
+                // Keep indexer keys in cache-cell order and gather scalar scores after matmul.
+                indexer_pos_slot = ggml_reshape_3d(
                         ctx0, inp_attn->indexer_pos_slot, n_pos, 1, n_stream);
-                ggml_tensor * indexer_k_cache = ggml_permute(ctx0, mctx_idx->get_k(ctx0, il), 0, 2, 1, 3);
+                indexer_k_cache = ggml_permute(ctx0, mctx_idx->get_k(ctx0, il), 0, 2, 1, 3);
 
                 // The cache is allocated for n_seq_max streams, while this ubatch can use fewer.
-                // ggml_get_rows requires the cache stream dimension to match the index tensor.
                 GGML_ASSERT(n_stream <= indexer_k_cache->ne[3]);
                 indexer_k_cache = ggml_view_4d(ctx0, indexer_k_cache,
                         indexer_k_cache->ne[0], indexer_k_cache->ne[1],
                         indexer_k_cache->ne[2], n_stream,
                         indexer_k_cache->nb[1], indexer_k_cache->nb[2],
                         indexer_k_cache->nb[3], 0);
-
-                indexer_k_pos = ggml_get_rows(ctx0, indexer_k_cache, indexer_pos_slot);
-                cb(indexer_k_pos, "indexer_k_pos", il);
             }
 
             ggml_tensor * k_cache = mctx_base->get_k(ctx0, il);
@@ -558,10 +555,10 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                 ggml_tensor * indexer_k_stream = nullptr;
                 ggml_tensor * indexer_valid_stream = nullptr;
                 if (has_sparse_queries) {
-                    indexer_k_stream = ggml_view_4d(ctx0, indexer_k_pos,
-                            indexer_k_pos->ne[0], indexer_k_pos->ne[1], 1, 1,
-                            indexer_k_pos->nb[1], indexer_k_pos->nb[2], indexer_k_pos->nb[3],
-                            stream*indexer_k_pos->nb[3]);
+                    indexer_k_stream = ggml_view_4d(ctx0, indexer_k_cache,
+                            indexer_k_cache->ne[0], indexer_k_cache->ne[1], 1, 1,
+                            indexer_k_cache->nb[1], indexer_k_cache->nb[2], indexer_k_cache->nb[3],
+                            stream*indexer_k_cache->nb[3]);
 
                     indexer_valid_stream = ggml_view_4d(ctx0, inp_attn->indexer_pos_valid,
                             n_pos, 1, 1, 1,
@@ -607,8 +604,14 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
                         // Bound score temporaries to key_chunk_size * query_count * groups.
                         // Reduce chunks pairwise below to avoid repeatedly copying the growing prefix.
-                        for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
-                            const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
+                        const int64_t n_cache_cells = indexer_k_stream->ne[1];
+                        ggml_tensor * pos_slot_stream = ggml_view_3d(ctx0, indexer_pos_slot,
+                                n_pos, 1, 1,
+                                indexer_pos_slot->nb[1], indexer_pos_slot->nb[2],
+                                stream*indexer_pos_slot->nb[2]);
+
+                        for (int64_t key_start = 0; key_start < n_cache_cells; key_start += n_cache_cells) {
+                            const int64_t key_count = n_cache_cells;
                             ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_stream,
                                     indexer_k_stream->ne[0], key_count, 1, 1,
                                     indexer_k_stream->nb[1], indexer_k_stream->nb[2], indexer_k_stream->nb[3],
@@ -616,16 +619,19 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
                             ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
                             ggml_prec_set_acc(token_scores, GGML_PREC_F32);
-                            token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
+                            // Gather scalar scores by token position instead of copying full key vectors.
+                            token_scores = ggml_permute(ctx0, token_scores, 1, 0, 2, 3);
+                            token_scores = ggml_get_rows(ctx0, token_scores, pos_slot_stream);
+                            token_scores = ggml_permute(ctx0, token_scores, 1, 2, 0, 3);
                             token_scores = ggml_scale(ctx0, token_scores,
                                     1.0f/sqrtf(float(hparams.indexer_head_size)));
 
                             ggml_tensor * valid_chunk = ggml_view_4d(ctx0, indexer_valid_stream,
-                                    key_count, 1, 1, 1,
+                                    n_pos, 1, 1, 1,
                                     indexer_valid_stream->nb[1],
                                     indexer_valid_stream->nb[1],
                                     indexer_valid_stream->nb[1],
-                                    key_start*indexer_valid_stream->nb[0]);
+                                    0);
                             token_scores = ggml_add(ctx0, token_scores, valid_chunk);
 
                             ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
