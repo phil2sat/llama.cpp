@@ -186,7 +186,6 @@ llama_kv_cache_msa_context::llama_kv_cache_msa_context(
     ctx_base(kv->get_base()->init_full()),
     ctx_idx (kv->get_idx ()->init_full()),
     status(llama_memory_status_combine(ctx_base->get_status(), ctx_idx->get_status())) {
-    full = true;
 }
 
 llama_kv_cache_msa_context::llama_kv_cache_msa_context(
@@ -264,11 +263,6 @@ uint32_t llama_kv_cache_msa_context::get_n_pos() const {
     // pad the value so that the graph remains constant across batches and can be reused
     const uint32_t n_pad = 256;
 
-    if (full) {
-        // graph reservation: every position the cache can hold
-        return std::max(n_pad, GGML_PAD(kv->get_idx()->get_size(), n_pad));
-    }
-
     llama_pos pos_max = -1;
 
     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) kv->get_n_seq_max(); ++seq_id) {
@@ -279,10 +273,6 @@ uint32_t llama_kv_cache_msa_context::get_n_pos() const {
 }
 
 uint32_t llama_kv_cache_msa_context::get_n_pos(const llama_ubatch * ubatch) const {
-    if (full) {
-        return get_n_pos();
-    }
-
     llama_pos pos_max = -1;
 
     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) kv->get_n_seq_max(); ++seq_id) {

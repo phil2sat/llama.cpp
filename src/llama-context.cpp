@@ -3028,14 +3028,6 @@ ggml_cgraph * llama_context::graph_reserve(
 
     ubatch_prepare_reserve(ubatch, n_outputs, sampling.samplers, cparams.n_outputs_max_per_seq);
 
-    // queries before indexer_dense_context use dense attention and skip the block indexer. The reserve ubatch has
-    // all positions at 0, so place them past the dense context to reserve the (larger) block-routed graph.
-    if (model.hparams.indexer_dense_context > 0) {
-        for (uint32_t i = 0; i < ubatch.n_tokens*ubatch.n_pos; ++i) {
-            ubatch.pos[i] = (llama_pos) model.hparams.indexer_dense_context + (llama_pos) (i % ubatch.n_seq_tokens);
-        }
-    }
-
     auto * res = gf_res_reserve.get();
 
     const auto gparams = graph_params(res, ubatch, mctx, ctx_type_to_graph_type(cparams.ctx_type));
