@@ -3075,6 +3075,21 @@ ggml_cgraph * llama_context::graph_reserve(
             g.first += ggml_nbytes(t);
             g.second++;
         }
+        // node count per op
+        {
+            std::map<std::string, int> ops;
+            for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+                ops[ggml_op_name(ggml_graph_node(gf, i)->op)]++;
+            }
+            std::vector<std::pair<std::string, int>> sorted_ops(ops.begin(), ops.end());
+            std::sort(sorted_ops.begin(), sorted_ops.end(), [](const auto & a, const auto & b) { return a.second > b.second; });
+            std::string line;
+            for (size_t i = 0; i < std::min<size_t>(sorted_ops.size(), 24); ++i) {
+                line += sorted_ops[i].first + "=" + std::to_string(sorted_ops[i].second) + " ";
+            }
+            LLAMA_LOG_INFO("%s: %d nodes, ops: %s\n", __func__, ggml_graph_n_nodes(gf), line.c_str());
+        }
+
         // liveness in graph order: a tensor lives from its node to its last consumer (views count for their source)
         {
             const int n_nodes = ggml_graph_n_nodes(gf);
