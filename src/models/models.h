@@ -2345,6 +2345,10 @@ struct llama_model_maxwell_moe : public llama_model_base {
     static constexpr int64_t query_chunk_size = 64;
     static constexpr int64_t key_chunk_size   = 8192;
 
+    // a sparse query chunk with at most this many queries scores the indexer keys in cache order and gathers the
+    // scalar scores by position; larger chunks gather the key vectors once per layer instead
+    static constexpr int64_t indexer_score_gather_max_queries = 8;
+
     struct graph : public llm_graph_context {
         struct no_build {};
         graph(const llm_graph_params & params);

@@ -521,6 +521,18 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
             ggml_tensor * indexer_k_cache = nullptr;
             ggml_tensor * indexer_pos_slot = nullptr;
+
+            // Position-ordered copy of the indexer keys. Chunks with many queries gather the keys once per
+            // layer (cost ~n_pos*head_size) instead of gathering the scores of every chunk (cost
+            // ~n_pos*groups*queries), so it is only built when such a chunk exists.
+            ggml_tensor * indexer_k_pos = nullptr;
+            const auto get_indexer_k_pos = [&]() {
+                if (!indexer_k_pos) {
+                    indexer_k_pos = ggml_get_rows(ctx0, indexer_k_cache, indexer_pos_slot);
+                    cb(indexer_k_pos, "indexer_k_pos", il);
+                }
+                return indexer_k_pos;
+            };
             if (has_sparse_queries) {
                 // Keep indexer keys in cache-cell order and gather scalar scores after matmul.
                 indexer_pos_slot = ggml_reshape_3d(
@@ -602,37 +614,42 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
 
                         std::vector<ggml_tensor *> score_chunks;
 
-                        // Bound score temporaries to key_chunk_size * query_count * groups.
-                        // Reduce chunks pairwise below to avoid repeatedly copying the growing prefix.
-                        const int64_t n_cache_cells = indexer_k_stream->ne[1];
-                        ggml_tensor * pos_slot_stream = ggml_view_3d(ctx0, indexer_pos_slot,
-                                n_pos, 1, 1,
-                                indexer_pos_slot->nb[1], indexer_pos_slot->nb[2],
-                                stream*indexer_pos_slot->nb[2]);
+                        const float score_scale = 1.0f/sqrtf(float(hparams.indexer_head_size));
 
-                        for (int64_t key_start = 0; key_start < n_cache_cells; key_start += n_cache_cells) {
-                            const int64_t key_count = n_cache_cells;
-                            ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_stream,
-                                    indexer_k_stream->ne[0], key_count, 1, 1,
-                                    indexer_k_stream->nb[1], indexer_k_stream->nb[2], indexer_k_stream->nb[3],
-                                    key_start*indexer_k_stream->nb[1]);
+                        ggml_tensor * valid_stream = ggml_view_4d(ctx0, indexer_valid_stream,
+                                n_pos, 1, 1, 1,
+                                indexer_valid_stream->nb[1],
+                                indexer_valid_stream->nb[1],
+                                indexer_valid_stream->nb[1],
+                                0);
 
-                            ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
-                            ggml_prec_set_acc(token_scores, GGML_PREC_F32);
-                            // Gather scalar scores by token position instead of copying full key vectors.
-                            token_scores = ggml_permute(ctx0, token_scores, 1, 0, 2, 3);
-                            token_scores = ggml_get_rows(ctx0, token_scores, pos_slot_stream);
-                            token_scores = ggml_permute(ctx0, token_scores, 1, 2, 0, 3);
-                            token_scores = ggml_scale(ctx0, token_scores,
-                                    1.0f/sqrtf(float(hparams.indexer_head_size)));
+                        if (query_count <= indexer_score_gather_max_queries) {
+                            // Few queries (decoding, speculative verification): score in cache-cell order and
+                            // gather the scalar scores by token position afterwards. The key vectors are never
+                            // copied and the score temporary is only n_cells*groups*queries floats.
+                            const int64_t n_cache_cells = indexer_k_stream->ne[1];
+                            const int64_t n_groups_q    = indexer_q_chunk->ne[1];
 
-                            ggml_tensor * valid_chunk = ggml_view_4d(ctx0, indexer_valid_stream,
-                                    n_pos, 1, 1, 1,
-                                    indexer_valid_stream->nb[1],
-                                    indexer_valid_stream->nb[1],
-                                    indexer_valid_stream->nb[1],
-                                    0);
-                            token_scores = ggml_add(ctx0, token_scores, valid_chunk);
+                            ggml_tensor * pos_slot_stream = ggml_view_3d(ctx0, indexer_pos_slot,
+                                    n_pos, 1, 1,
+                                    indexer_pos_slot->nb[1], indexer_pos_slot->nb[2],
+                                    stream*indexer_pos_slot->nb[2]);
+
+                            // [n_cells, groups, queries]
+                            ggml_tensor * scores = ggml_mul_mat(ctx0, indexer_k_stream, indexer_q_chunk);
+                            ggml_prec_set_acc(scores, GGML_PREC_F32);
+
+                            // ggml_get_rows takes whole rows along dim 1 and needs contiguous rows:
+                            // [n_cells, groups, queries] -> [groups*queries, n_cells] -> [groups*queries, n_pos]
+                            scores = ggml_cont(ctx0, ggml_permute(ctx0, scores, 2, 0, 1, 3));
+                            scores = ggml_reshape_2d(ctx0, scores, n_groups_q*query_count, n_cache_cells);
+                            scores = ggml_get_rows(ctx0, scores, pos_slot_stream);
+                            scores = ggml_reshape_3d(ctx0, scores, n_groups_q, query_count, n_pos);
+
+                            // -> [n_pos, queries, groups]
+                            ggml_tensor * token_scores = ggml_permute(ctx0, scores, 2, 1, 0, 3);
+                            token_scores = ggml_scale(ctx0, token_scores, score_scale);
+                            token_scores = ggml_add(ctx0, token_scores, valid_stream);
 
                             ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
                                     hparams.indexer_block_size, 1,
@@ -640,6 +657,43 @@ llama_model_maxwell_moe::graph::graph(const llm_graph_params & params) : llm_gra
                             cb(pooled, "indexer_block_scores", il);
 
                             score_chunks.push_back(pooled);
+                        } else {
+                            // Many queries (prompt processing): bound the score temporaries to
+                            // key_chunk_size * query_count * groups and reduce the chunks pairwise below to
+                            // avoid repeatedly copying the growing prefix.
+                            ggml_tensor * k_pos = get_indexer_k_pos();
+                            ggml_tensor * indexer_k_pos_stream = ggml_view_4d(ctx0, k_pos,
+                                    k_pos->ne[0], k_pos->ne[1], 1, 1,
+                                    k_pos->nb[1], k_pos->nb[2], k_pos->nb[3],
+                                    stream*k_pos->nb[3]);
+
+                            for (int64_t key_start = 0; key_start < n_pos; key_start += key_chunk_size) {
+                                const int64_t key_count = std::min<int64_t>(key_chunk_size, n_pos - key_start);
+                                ggml_tensor * indexer_k_chunk = ggml_view_4d(ctx0, indexer_k_pos_stream,
+                                        indexer_k_pos_stream->ne[0], key_count, 1, 1,
+                                        indexer_k_pos_stream->nb[1], indexer_k_pos_stream->nb[2],
+                                        indexer_k_pos_stream->nb[3],
+                                        key_start*indexer_k_pos_stream->nb[1]);
+
+                                // [key_count, groups, queries] -> [key_count, queries, groups]
+                                ggml_tensor * token_scores = ggml_mul_mat(ctx0, indexer_k_chunk, indexer_q_chunk);
+                                ggml_prec_set_acc(token_scores, GGML_PREC_F32);
+                                token_scores = ggml_permute(ctx0, token_scores, 0, 2, 1, 3);
+                                token_scores = ggml_scale(ctx0, token_scores, score_scale);
+
+                                ggml_tensor * valid_chunk = ggml_view_4d(ctx0, valid_stream,
+                                        key_count, 1, 1, 1,
+                                        valid_stream->nb[1], valid_stream->nb[1], valid_stream->nb[1],
+                                        key_start*valid_stream->nb[0]);
+                                token_scores = ggml_add(ctx0, token_scores, valid_chunk);
+
+                                ggml_tensor * pooled = ggml_pool_2d(ctx0, token_scores, GGML_OP_POOL_MAX,
+                                        hparams.indexer_block_size, 1,
+                                        hparams.indexer_block_size, 1, 0, 0);
+                                cb(pooled, "indexer_block_scores", il);
+
+                                score_chunks.push_back(pooled);
+                            }
                         }
 
                         // A balanced concatenation tree keeps total copied score elements
