@@ -6696,13 +6696,16 @@ struct ggml_tensor * ggml_top_k_mask(
 
     if (blocks) {
         GGML_ASSERT(blocks->type == GGML_TYPE_I32);
-        GGML_ASSERT(blocks->ne[2] == 1 && blocks->ne[3] == 1);
+        GGML_ASSERT(blocks->ne[2] > 0 && top_k->ne[2] % blocks->ne[2] == 0);
+        GGML_ASSERT(blocks->ne[3] > 0 && top_k->ne[3] % blocks->ne[3] == 0);
         GGML_ASSERT(!score || blocks->ne[1] == score->ne[0]);
     }
 
     if (extra) {
         GGML_ASSERT(extra->type == GGML_TYPE_I32);
-        GGML_ASSERT(extra->ne[1] == top_k->ne[1] && extra->ne[2] == top_k->ne[2] && extra->ne[3] == top_k->ne[3]);
+        GGML_ASSERT(extra->ne[1] > 0 && top_k->ne[1] % extra->ne[1] == 0);
+        GGML_ASSERT(extra->ne[2] > 0 && top_k->ne[2] % extra->ne[2] == 0);
+        GGML_ASSERT(extra->ne[3] > 0 && top_k->ne[3] % extra->ne[3] == 0);
     }
 
     struct ggml_tensor * result = ggml_new_tensor_4d(ctx, mask->type, mask->ne[0], top_k->ne[1], top_k->ne[2], top_k->ne[3]);

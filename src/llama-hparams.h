@@ -300,6 +300,9 @@ struct llama_hparams {
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
 
+    // NextN/MTP hidden-state dimension (0 = use n_embd_out()).
+    uint32_t n_embd_nextn_impl = 0;
+
     uint32_t dflash_block_size       = 0;
     uint32_t dflash_conv_kernel_size = 0;
     uint32_t dflash_conv_group_size  = 0;
@@ -359,6 +362,8 @@ struct llama_hparams {
     // MSA
     uint32_t indexer_block_size  = 0;
     uint32_t indexer_local_blocks = 0;
+    uint32_t indexer_prefix_blocks = 0;
+    uint32_t indexer_dense_context = 0; // Dense causal attention for queries before this position; 0 disables it.
 
     // Indexer is "full" (1) or "shared" (0)
     // Shared indexers reuse top-k from previous full layer
@@ -515,6 +520,9 @@ struct llama_hparams {
 
     // dimension of output embeddings
     uint32_t n_embd_out() const;
+
+    // dimension of hidden states exchanged with NextN/MTP draft models
+    uint32_t n_embd_nextn() const;
 
     // dimension of key/value embeddings for each head (per layer)
     uint32_t n_embd_head_k(uint32_t il = 0) const;

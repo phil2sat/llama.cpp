@@ -1769,15 +1769,25 @@ class ModelBase:
         if config is not None:
             return config
 
-        try:
-            # for security reason, we don't allow loading remote code by default
-            # if a model need remote code, we will fallback to config.json
-            config = AutoConfig.from_pretrained(dir_model, trust_remote_code=False).to_dict()
-        except Exception as e:
-            logger.warning(f"Failed to load model config from {dir_model}: {e}")
-            logger.warning("Trying to load config.json instead")
-            with open(dir_model / "config.json", "r", encoding="utf-8") as f:
-                config = json.load(f)
+        config_path = dir_model / "config.json"
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_json = json.load(f)
+
+        if config_json.get("model_type") == "maxwell_moe":
+            # Maxwell ships a custom AutoConfig mapping. Loading it with remote
+            # code disabled makes Transformers instantiate the generic config
+            # class and emit a misleading model_type mismatch warning.
+            # The converter only needs the declarative config values.
+            config = config_json
+        else:
+            try:
+                # for security reason, we don't allow loading remote code by default
+                # if a model need remote code, we will fallback to config.json
+                config = AutoConfig.from_pretrained(dir_model, trust_remote_code=False).to_dict()
+            except Exception as e:
+                logger.warning(f"Failed to load model config from {dir_model}: {e}")
+                logger.warning("Trying to load config.json instead")
+                config = config_json
         if "llm_config" in config:
             # rename for InternVL
             config["text_config"] = config["llm_config"]
@@ -2089,7 +2099,7 @@ class TextModel(ModelBase):
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=False)
         assert tokenizer is not None
         vocab_size = self.hparams.get("vocab_size", len(tokenizer.vocab))
         assert max(tokenizer.vocab.values()) < vocab_size
@@ -2233,6 +2243,9 @@ class TextModel(ModelBase):
         if chkhsh == "1f9825a388f700a6b591722f17d470cbbcf10973ece35d2fd14239a14110ae1a":
             # ref: https://huggingface.co/IFM/K2-Horizon-0.9B
             res = "k2-horizon"
+        if chkhsh == "81a5d106ca83f5e2fada2c5d39b3adb0f83c685e4cf50f16e50752e0cbe91e80":
+            # ref: https://huggingface.co/maxwell-model/Maxwell-V1-Flash
+            res = "maxwell"
         if chkhsh == "0ef9807a4087ebef797fc749390439009c3b9eda9ad1a097abbe738f486c01e5":
             # ref: https://huggingface.co/meta-llama/Meta-Llama-3-8B
             res = "llama-bpe"

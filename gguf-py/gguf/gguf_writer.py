@@ -836,6 +836,12 @@ class GGUFWriter:
     def add_indexer_local_blocks(self, local_blocks: int) -> None:
         self.add_uint32(Keys.Attention.Indexer.LOCAL_BLOCKS.format(arch=self.arch), local_blocks)
 
+    def add_indexer_prefix_blocks(self, prefix_blocks: int) -> None:
+        self.add_uint32(Keys.Attention.Indexer.PREFIX_BLOCKS.format(arch=self.arch), prefix_blocks)
+
+    def add_indexer_dense_context(self, dense_context: int) -> None:
+        self.add_uint32(Keys.Attention.Indexer.DENSE_CONTEXT.format(arch=self.arch), dense_context)
+
     def add_indexer_types(self, value: Sequence[bool]) -> None:
         key = Keys.Attention.Indexer.TYPES.format(arch=self.arch)
         self.add_array(key, value)

@@ -40626,7 +40626,14 @@ static void ggml_cl_top_k_mask(ggml_backend_t backend, const ggml_tensor * src0,
     CL_CHECK(clSetKernelArg(kernel, 40, sizeof(cl_ulong), &nbd1));
     CL_CHECK(clSetKernelArg(kernel, 41, sizeof(cl_ulong), &nbd2));
     CL_CHECK(clSetKernelArg(kernel, 42, sizeof(cl_ulong), &nbd3));
-    CL_CHECK(clSetKernelArg(kernel, 43, sizeof(cl_int),   &fill));
+    CL_CHECK(clSetKernelArg(kernel, 43, sizeof(cl_ulong), &nbb2));
+    CL_CHECK(clSetKernelArg(kernel, 44, sizeof(cl_ulong), &nbb3));
+    CL_CHECK(clSetKernelArg(kernel, 45, sizeof(cl_ulong), &neb2));
+    CL_CHECK(clSetKernelArg(kernel, 46, sizeof(cl_ulong), &neb3));
+    CL_CHECK(clSetKernelArg(kernel, 47, sizeof(cl_ulong), &nee1));
+    CL_CHECK(clSetKernelArg(kernel, 48, sizeof(cl_ulong), &nee2));
+    CL_CHECK(clSetKernelArg(kernel, 49, sizeof(cl_ulong), &nee3));
+    CL_CHECK(clSetKernelArg(kernel, 50, sizeof(cl_int),   &fill));
 
     const size_t nth = MIN((size_t) 512, backend_ctx->get_kernel_workgroup_size(kernel));
     size_t global[] = {nth, (size_t) ggml_nrows(dst)};

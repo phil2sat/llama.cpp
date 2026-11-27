@@ -96,7 +96,7 @@ struct llama_hparams;
 // Other batches carry token embeddings (n_embd_inp size).
 size_t llama_batch_ext_select_n_embd_inp(llama_context_type ctx_type, llm_arch arch, const llama_hparams & hparams);
 
-// MTP contexts also take the target model's hidden state (n_embd_out size), 0 = no state input
+// MTP contexts also take the target model's NextN hidden state (n_embd_nextn size), 0 = no state input
 size_t llama_batch_ext_select_n_embd_state(llama_context_type ctx_type, const llama_hparams & hparams);
 
 struct llama_batch_ext {

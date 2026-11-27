@@ -305,6 +305,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_laguna(params);
         case LLM_ARCH_RICURSIVE:
             return new llama_model_ricursive(params);
+        case LLM_ARCH_MAXWELL_MOE:
+            return new llama_model_maxwell_moe(params);
         case LLM_ARCH_ERNIE4_5:
             return new llama_model_ernie4_5(params);
         case LLM_ARCH_ERNIE4_5_MOE:
@@ -3316,6 +3318,60 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         nullptr,
                         nullptr);
             } break;
+        case LLM_ARCH_MAXWELL_MOE:
+            {
+                if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && hparams.n_layer_nextn > 0) {
+                    // The Maxwell MTP decoder uses dense GQA and owns only the appended MTP KV layer.
+                    const llama_kv_cache::layer_filter_cb filter =
+                        [&](uint32_t il) { return il >= hparams.n_layer(); };
+
+                    res = new llama_kv_cache(
+                            *this,
+                            params.no_alloc,
+                            hparams,
+                            params.type_k,
+                            params.type_v,
+                            !cparams.flash_attn,
+                            cparams.offload_kqv,
+                            cparams.kv_unified,
+                            cparams.n_ctx_seq,
+                            cparams.n_seq_max,
+                            hparams.n_swa,
+                            hparams.swa_type,
+                            nullptr,
+                            filter,
+                            nullptr,
+                            nullptr);
+                } else {
+                    // The backbone uses MSA and requires one independently mapped cache stream per sequence.
+                    // Keep the appended MTP layers out of the main-context cache; they have their own
+                    // cache when the draft context is created.
+                    const llama_kv_cache::layer_filter_cb filter_base =
+                        [&](uint32_t il) { return il < hparams.n_layer(); };
+                    const llama_kv_cache::layer_filter_cb filter_idx =
+                        [&](uint32_t il) { return il < hparams.n_layer(); };
+
+                    if (cparams.kv_unified) {
+                        LLAMA_LOG_WARN("%s: --kv-unified is not supported for Maxwell MSA; using per-sequence KV streams\n", __func__);
+                    }
+
+                    res = new llama_kv_cache_msa(
+                            *this,
+                            params.no_alloc,
+                            params.type_k,
+                            params.type_v,
+                            false, // v_trans: the MBSA graph always uses the flash attention op, also with -fa off
+                            cparams.offload_kqv,
+                            false,
+                            cparams.n_ctx_seq,
+                            cparams.n_seq_max,
+                            hparams.n_swa,
+                            hparams.swa_type,
+                            filter_base,
+                            filter_idx,
+                            nullptr);
+                }
+            } break;
         case LLM_ARCH_HY_V4:
             {
                 if (hparams.indexer_top_k == 0) {
@@ -3808,6 +3864,10 @@ int32_t llama_model_n_embd_out(const llama_model * model) {
     return model->hparams.n_embd_out();
 }
 
+int32_t llama_model_n_embd_nextn(const llama_model * model) {
+    return model->hparams.n_embd_nextn();
+}
+
 int32_t llama_model_n_layer(const llama_model * model) {
     return model->hparams.n_layer();
 }
@@ -3995,6 +4055,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_LLADA_MOE:
         case LLM_ARCH_RND1:
         case LLM_ARCH_RICURSIVE:
+        case LLM_ARCH_MAXWELL_MOE:
         case LLM_ARCH_OLMO2:
         case LLM_ARCH_OLMOE:
         case LLM_ARCH_PHI2:

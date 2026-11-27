@@ -1497,6 +1497,15 @@ struct llama_model_xing4_0 : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
     uint32_t graph_nodes_per_tensor() const override { return 32; }
+    uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_seq_max, uint32_t n_ctx_seq) const override {
+        GGML_UNUSED(n_seq_max);
+        constexpr uint64_t query_chunk_size = 64;
+        constexpr uint64_t key_chunk_size = 8192;
+        constexpr uint64_t nodes_per_key_chunk = 8;
+        const uint64_t n_query_chunks = (n_ubatch + query_chunk_size - 1) / query_chunk_size;
+        const uint64_t n_key_chunks = (n_ctx_seq + key_chunk_size - 1) / key_chunk_size;
+        return uint64_t(hparams.n_layer_all) * n_query_chunks * n_key_chunks * hparams.n_head_kv() * nodes_per_key_chunk;
+    }
 
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
@@ -2324,6 +2333,72 @@ struct llama_model_beam : public llama_model_base {
 };
 
 
+struct llama_model_maxwell_moe : public llama_model_base {
+    llama_model_maxwell_moe(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+    uint32_t graph_nodes_per_tensor() const override { return 32; }
+    uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_seq_max, uint32_t n_ctx_seq) const override;
+
+    // the block routing is unrolled per stream, query chunk and key chunk: the scores of a query chunk are accumulated
+    // over key chunks, which bounds the score temporary to key_chunk_size*query_chunk_size*n_head_kv floats
+    static constexpr int64_t query_chunk_size = 64;
+    static constexpr int64_t key_chunk_size   = 8192;
+
+    // a sparse query chunk with at most this many queries scores the indexer keys in cache order and gathers the
+    // scalar scores by position; larger chunks gather the key vectors once per layer instead
+    static constexpr int64_t indexer_score_gather_max_queries = 8;
+
+    struct graph : public llm_graph_context {
+        struct no_build {};
+        graph(const llm_graph_params & params);
+        graph(const llm_graph_params & params, no_build);
+
+        // mHC (manifold-constrained hyper-connections), as in DeepSeek-V4
+        struct hc_pre {
+            ggml_tensor * cur;  // collapsed input of the sublayer
+            ggml_tensor * post; // per-stream gates of the sublayer output
+            ggml_tensor * comb; // stream mixing matrix of the residual
+        };
+
+        hc_pre build_hc_pre(
+                ggml_tensor * x,
+                ggml_tensor * hc_fn,
+                ggml_tensor * hc_scale,
+                ggml_tensor * hc_base,
+                int il) const;
+
+        // weighted sum of the streams: [n_embd, hc, n_tokens] -> [n_embd, n_tokens]
+        ggml_tensor * build_hc_collapse(
+                ggml_tensor * x,
+                ggml_tensor * weights,
+                int il) const;
+
+        ggml_tensor * build_hc_sinkhorn(
+                ggml_tensor * comb,
+                int il) const;
+
+        ggml_tensor * build_hc_post(
+                ggml_tensor * x,
+                ggml_tensor * residual,
+                ggml_tensor * post,
+                ggml_tensor * comb,
+                int il) const;
+
+        ggml_tensor * build_hc_head(
+                ggml_tensor * x,
+                ggml_tensor * hc_fn,
+                ggml_tensor * hc_scale,
+                ggml_tensor * hc_base) const;
+    };
+
+    struct graph_mtp : public graph {
+        graph_mtp(const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
 struct llama_model_ricursive : public llama_model_base {
     llama_model_ricursive(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -2866,12 +2941,6 @@ struct llama_model_minimax_m3 : public llama_model_base {
     struct graph : public llm_graph_context {
         graph(const llm_graph_params & params);
 
-        ggml_tensor * build_attn_msa_fa(
-                ggml_tensor * q_cur,   // [D, HQ, S] f32
-                ggml_tensor * k,       // [D, n_keys, 1, C]  C = HKV or HKV*n_stream
-                ggml_tensor * v,       // [D, n_keys, 1, C]
-                ggml_tensor * mask,    // [n_keys, R, 1, C] f16, R = HQ*T/(Gp*C)
-                int64_t Gp, float kq_scale, int il) const;
     };
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };

@@ -46,7 +46,7 @@ llama_kv_cache_msa::llama_kv_cache_msa(
     kv_idx = std::make_unique<llama_kv_cache>(
             model, no_alloc, hparams_idx, type_k, type_v,
             v_trans, offload, unified, kv_size, n_seq_max,
-            n_swa, swa_type, nullptr, filter_idx, reuse, nullptr);
+            n_swa, swa_type, nullptr, filter_idx, reuse, nullptr, "", true);
 }
 
 void llama_kv_cache_msa::clear(bool data) {
@@ -272,6 +272,23 @@ uint32_t llama_kv_cache_msa_context::get_n_pos() const {
     return std::max(n_pad, GGML_PAD((uint32_t) (pos_max + 1), n_pad));
 }
 
+uint32_t llama_kv_cache_msa_context::get_n_pos(const llama_ubatch * ubatch) const {
+    llama_pos pos_max = -1;
+
+    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) kv->get_n_seq_max(); ++seq_id) {
+        pos_max = std::max(pos_max, kv->seq_pos_max(seq_id));
+    }
+
+    if (ubatch != nullptr) {
+        for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
+            pos_max = std::max(pos_max, ubatch->pos[i]);
+        }
+    }
+
+    const uint32_t n_pad = 256;
+    return std::max(n_pad, GGML_PAD((uint32_t) (pos_max + 1), n_pad));
+}
+
 void llama_kv_cache_msa_context::set_input_cell_pos(ggml_tensor * dst, const llama_ubatch * ubatch, int32_t div) const {
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     GGML_ASSERT(dst->type == GGML_TYPE_I32);
@@ -301,7 +318,10 @@ void llama_kv_cache_msa_context::set_input_cell_pos(ggml_tensor * dst, const lla
     }
 }
 
-void llama_kv_cache_msa_context::set_input_pos_slot(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+void llama_kv_cache_msa_context::set_input_pos_slot(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        const ggml_tensor * k_idxs) const {
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     GGML_ASSERT(dst->type == GGML_TYPE_I32 || dst->type == GGML_TYPE_F32);
 
@@ -315,7 +335,7 @@ void llama_kv_cache_msa_context::set_input_pos_slot(ggml_tensor * dst, const lla
     for (int64_t s = 0; s < n_stream_ub; ++s) {
         const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
 
-        const auto & cells = kv->get_base()->get_cells(seq_id);
+        const auto & cells = kv->get_idx()->get_cells(seq_id);
 
         std::vector<int32_t> map(n_pos, 0);
 
@@ -333,6 +353,16 @@ void llama_kv_cache_msa_context::set_input_pos_slot(ggml_tensor * dst, const lla
             map[p0] = (int32_t) j;
         }
 
+        if (k_idxs != nullptr) {
+            const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
+            for (int64_t t = 0; t < n_tps; ++t) {
+                const llama_pos pos = ubatch->pos[s*n_tps + t];
+                if (token_slots[t] >= 0 && pos >= 0 && pos < n_pos) {
+                    map[pos] = (int32_t) (token_slots[t] % kv->get_idx()->get_size());
+                }
+            }
+        }
+
         if (dst->type == GGML_TYPE_I32) {
             int32_t * data = (int32_t *) dst->data + s*n_pos;
             std::copy(map.begin(), map.end(), data);
@@ -340,6 +370,215 @@ void llama_kv_cache_msa_context::set_input_pos_slot(ggml_tensor * dst, const lla
             float * data = (float *) dst->data + s*n_pos;
             for (int64_t p = 0; p < n_pos; ++p) {
                 data[p] = (float) map[p];
+            }
+        }
+    }
+}
+
+void llama_kv_cache_msa_context::set_input_pos_valid_mask(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        const ggml_tensor * k_idxs) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+    const int64_t n_pos = dst->ne[0];
+    const int64_t n_stream = dst->ne[1];
+    const int64_t n_tokens = ubatch->n_tokens;
+
+    GGML_ASSERT(n_pos == get_n_pos(ubatch));
+    GGML_ASSERT(n_tokens % n_stream == 0);
+
+    const int64_t n_tps = n_tokens / n_stream;
+    float * data = (float *) dst->data;
+
+    for (int64_t s = 0; s < n_stream; ++s) {
+        const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
+        const auto & cells = kv->get_idx()->get_cells(seq_id);
+        float * row = data + s*dst->nb[1]/sizeof(float);
+        std::fill(row, row + n_pos, -INFINITY);
+
+        for (uint32_t j = 0; j < cells.size(); ++j) {
+            if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+                continue;
+            }
+            const llama_pos pos = cells.pos_get(j);
+            if (pos >= 0 && pos < n_pos) {
+                row[pos] = 0.0f;
+            }
+        }
+        const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
+        for (int64_t t = 0; t < n_tps; ++t) {
+            const llama_pos pos = ubatch->pos[s*n_tps + t];
+            if (token_slots[t] >= 0 && pos >= 0 && pos < n_pos) {
+                row[pos] = 0.0f;
+            }
+        }
+    }
+}
+
+void llama_kv_cache_msa_context::set_input_block_slots(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        const ggml_tensor * k_idxs,
+        int32_t block_size) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(dst->type == GGML_TYPE_I32);
+    GGML_ASSERT(block_size > 0);
+
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int64_t n_blocks = dst->ne[1];
+    const int64_t n_stream = dst->ne[3];
+
+    GGML_ASSERT(dst->ne[0] == block_size);
+    GGML_ASSERT(dst->ne[2] == 1);
+    GGML_ASSERT(n_tokens % n_stream == 0);
+    GGML_ASSERT(n_blocks == get_n_pos(ubatch) / block_size);
+
+    const int64_t n_tps = n_tokens / n_stream;
+    int32_t * data = (int32_t *) dst->data;
+    std::fill(data, data + ggml_nelements(dst), -1);
+
+    for (int64_t s = 0; s < n_stream; ++s) {
+        const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
+        const auto & cells = kv->get_base()->get_cells(seq_id);
+        std::vector<int32_t> pos_to_cell(get_n_pos(ubatch), -1);
+
+        for (uint32_t j = 0; j < cells.size(); ++j) {
+            if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+                continue;
+            }
+            const llama_pos pos = cells.pos_get(j);
+            if (pos >= 0 && pos < (llama_pos) pos_to_cell.size()) {
+                pos_to_cell[pos] = (int32_t) j;
+            }
+        }
+        const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
+        for (int64_t t = 0; t < n_tps; ++t) {
+            const llama_pos pos = ubatch->pos[s*n_tps + t];
+            if (pos >= 0 && pos < (llama_pos) pos_to_cell.size()) {
+                pos_to_cell[pos] = (int32_t) (token_slots[t] % kv->get_base()->get_size());
+            }
+        }
+
+        for (int64_t block = 0; block < n_blocks; ++block) {
+            for (int64_t offset = 0; offset < block_size; ++offset) {
+                const int64_t pos = block*block_size + offset;
+                data[s*dst->nb[3]/sizeof(int32_t) + block*dst->nb[1]/sizeof(int32_t) + offset] =
+                    pos_to_cell[pos];
+            }
+        }
+    }
+}
+
+void llama_kv_cache_msa_context::set_input_prefix_local_slots(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        const ggml_tensor * k_idxs,
+        int32_t block_size,
+        int32_t prefix_blocks,
+        int32_t local_blocks) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(dst->type == GGML_TYPE_I32);
+    GGML_ASSERT(block_size > 0 && prefix_blocks > 0 && local_blocks > 0);
+
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int64_t n_extra = dst->ne[0];
+    const int64_t n_tps = dst->ne[1];
+    const int64_t n_stream = dst->ne[3];
+
+    GGML_ASSERT(dst->ne[2] == 1);
+    GGML_ASSERT(n_tokens == n_tps*n_stream);
+    GGML_ASSERT(n_extra == (int64_t) (prefix_blocks + local_blocks)*block_size);
+
+    int32_t * data = (int32_t *) dst->data;
+    std::fill(data, data + ggml_nelements(dst), -1);
+
+    for (int64_t s = 0; s < n_stream; ++s) {
+        const llama_seq_id seq_id = ubatch->seq_id[s*n_tps][0];
+        const auto & cells = kv->get_base()->get_cells(seq_id);
+        std::vector<int32_t> pos_to_cell(get_n_pos(ubatch), -1);
+
+        for (uint32_t j = 0; j < cells.size(); ++j) {
+            if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+                continue;
+            }
+            const llama_pos pos = cells.pos_get(j);
+            if (pos >= 0 && pos < (llama_pos) pos_to_cell.size()) {
+                pos_to_cell[pos] = (int32_t) j;
+            }
+        }
+        const int64_t * token_slots = (const int64_t *) k_idxs->data + s*n_tps;
+        for (int64_t t = 0; t < n_tps; ++t) {
+            const llama_pos pos = ubatch->pos[s*n_tps + t];
+            if (pos >= 0 && pos < (llama_pos) pos_to_cell.size()) {
+                pos_to_cell[pos] = (int32_t) (token_slots[t] % kv->get_base()->get_size());
+            }
+        }
+
+        for (int64_t t = 0; t < n_tps; ++t) {
+            const int64_t token = s*n_tps + t;
+            const int64_t query_block = ubatch->pos[token] / block_size;
+            int64_t out = 0;
+
+            for (int32_t block = 0; block < prefix_blocks; ++block) {
+                if (block > query_block) {
+                    continue;
+                }
+                for (int32_t offset = 0; offset < block_size; ++offset) {
+                    const int64_t pos = (int64_t) block*block_size + offset;
+                    const int32_t cell = pos < (int64_t) pos_to_cell.size() ? pos_to_cell[pos] : -1;
+                    data[s*dst->nb[3]/sizeof(int32_t) + t*dst->nb[1]/sizeof(int32_t) + out++] = cell;
+                }
+            }
+
+            for (int32_t offset = 1 - local_blocks; offset <= 0; ++offset) {
+                const int64_t block = query_block + offset;
+                if (block < prefix_blocks) {
+                    continue;
+                }
+                for (int32_t token_offset = 0; token_offset < block_size; ++token_offset) {
+                    const int64_t pos = block*block_size + token_offset;
+                    const int32_t cell = pos >= 0 && pos < (int64_t) pos_to_cell.size() ? pos_to_cell[pos] : -1;
+                    data[s*dst->nb[3]/sizeof(int32_t) + t*dst->nb[1]/sizeof(int32_t) + out++] = cell;
+                }
+            }
+        }
+    }
+}
+
+void llama_kv_cache_msa_context::set_input_remote_block_mask(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        int32_t block_size,
+        int32_t prefix_blocks,
+        int32_t local_blocks) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(block_size > 0 && prefix_blocks > 0 && local_blocks > 0);
+
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int64_t n_blocks = dst->ne[0];
+    const int64_t n_tps = dst->ne[1];
+    const int64_t n_stream = dst->ne[3];
+
+    GGML_ASSERT(dst->ne[2] == 1);
+    GGML_ASSERT(n_tokens == n_tps*n_stream);
+    GGML_ASSERT(n_blocks == get_n_pos(ubatch) / block_size);
+
+    float * data = (float *) dst->data;
+    for (int64_t s = 0; s < n_stream; ++s) {
+        for (int64_t t = 0; t < n_tps; ++t) {
+            const int64_t token = s*n_tps + t;
+            const int64_t query_block = ubatch->pos[token] / block_size;
+            const int64_t local_start = std::max<int64_t>(0, query_block - local_blocks + 1)*block_size;
+            for (int64_t block = 0; block < n_blocks; ++block) {
+                const int64_t block_start = block*block_size;
+                const int64_t block_end = block_start + block_size;
+                const bool eligible = block_start >= (int64_t) prefix_blocks*block_size &&
+                    block_end <= local_start;
+                data[s*dst->nb[3]/sizeof(float) + t*dst->nb[1]/sizeof(float) + block] =
+                    eligible ? 0.0f : -INFINITY;
             }
         }
     }

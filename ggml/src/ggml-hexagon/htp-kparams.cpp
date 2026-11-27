@@ -4259,6 +4259,13 @@ static bool htp_kparams_solve_top_k_mask(
         (extra && !htp_top_k_mask_row_flat(extra, dst)) || (ggml_nrows(mask) > 1 && !htp_top_k_mask_mask_ok(mask, dst))) {
         return false;
     }
+    // block maps per stream and extra cells broadcast over the rows are not implemented
+    if (blocks && (blocks->ne[2] != 1 || blocks->ne[3] != 1)) {
+        return false;
+    }
+    if (extra && (extra->ne[1] != dst->ne[1] || extra->ne[2] != dst->ne[2] || extra->ne[3] != dst->ne[3])) {
+        return false;
+    }
     // the kernel scales block ids by blocks->nb[1] with a 16-bit vector multiply
     if (blocks && (blocks->type != GGML_TYPE_I32 || blocks->nb[0] != 4 || blocks->nb[1] != (size_t) blocks->ne[0] * 4 || blocks->nb[1] > INT16_MAX)) {
         return false;

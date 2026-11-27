@@ -25,6 +25,8 @@ layout(push_constant) uniform parameter
     uint m1; uint m2; uint m3;
     uint nbm1; uint nbm2; uint nbm3;
     uint nbd1; uint nbd2; uint nbd3;
+    uint nbb1; uint nbb2; uint nbb3;
+    uint nbe1; uint nbe2; uint nbe3;
 
     uint m_offset;
     uint k_offset;
@@ -73,7 +75,8 @@ void main() {
     // one invocation per pick or extra cell; cells kept twice get the same value
     for (uint i = tid; i < n_top + n_extra; i += BLOCK_SIZE) {
         if (i >= n_top) {
-            keep(data_e[e_offset + row*n_extra + (i - n_top)], m_row, d_row);
+            const uint e_row = e_offset + i1*nbe1 + i2*nbe2 + i3*nbe3;
+            keep(data_e[e_row + (i - n_top)], m_row, d_row);
             continue;
         }
 
@@ -88,8 +91,9 @@ void main() {
             keep(p, m_row, d_row);
             continue;
         }
+        const uint b_row = b_offset + i2*nbb2 + i3*nbb3 + uint(p)*nbb1;
         for (uint k = 0; k < n_blk; ++k) {
-            keep(data_b[b_offset + uint(p)*n_blk + k], m_row, d_row);
+            keep(data_b[b_row + k], m_row, d_row);
         }
     }
 }

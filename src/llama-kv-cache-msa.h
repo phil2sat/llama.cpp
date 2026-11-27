@@ -127,14 +127,24 @@ public:
     // max position currently present in the cache plus one, padded MSA blocks are defined over token positions
     // so the block-selection tensors are sized by this value rather than by the number of cells
     uint32_t get_n_pos() const;
+    uint32_t get_n_pos(const llama_ubatch * ubatch) const;
 
-    // position <-> cell translation maps, populated from the base cache cells
+    // Position-to-cell maps use the matching base or indexer cache slot map.
     // the model graph relates cache contents to token positions only through these per ubatch inputs
     // value for empty or other-sequence cells is 0 so consumers must mask them
     void set_input_cell_pos(ggml_tensor * dst, const llama_ubatch * ubatch, int32_t div) const;
-    // positions without a cell map to cell 0, consumers must mask them assumes one sequence per stream
-    void set_input_pos_slot(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    // Positions without a cell map to cell 0; consumers must mask them. Assumes one sequence per stream.
+    void set_input_pos_slot(ggml_tensor * dst, const llama_ubatch * ubatch, const ggml_tensor * k_idxs = nullptr) const;
     void set_input_pos_mask(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_pos_valid_mask(ggml_tensor * dst, const llama_ubatch * ubatch, const ggml_tensor * k_idxs) const;
+    // Build position-aligned block-to-cell maps for per-stream block routing.
+    void set_input_block_slots(ggml_tensor * dst, const llama_ubatch * ubatch, const ggml_tensor * k_idxs, int32_t block_size) const;
+    // Keep prefix and local block cells for every query token.
+    void set_input_prefix_local_slots(ggml_tensor * dst, const llama_ubatch * ubatch, const ggml_tensor * k_idxs,
+            int32_t block_size, int32_t prefix_blocks, int32_t local_blocks) const;
+    // Mark blocks eligible for remote top-k selection.
+    void set_input_remote_block_mask(ggml_tensor * dst, const llama_ubatch * ubatch,
+            int32_t block_size, int32_t prefix_blocks, int32_t local_blocks) const;
 
 private:
     llama_kv_cache_msa * kv;

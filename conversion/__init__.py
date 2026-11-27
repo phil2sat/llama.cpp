@@ -21,6 +21,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "AfmoeForCausalLM": "afmoe",
     "LagunaForCausalLM": "laguna",
     "RicursiveForCausalLM": "ricursive",
+    "MaxwellMoeForCausalLM": "maxwell_moe",
     "FlintForCausalLM": "flint",
     "ApertusForCausalLM": "llama",
     "ArceeForCausalLM": "llama",

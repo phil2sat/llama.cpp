@@ -536,6 +536,14 @@ public:
 
     ggml_tensor * self_k_idxs_idx = nullptr; // I64 [n_batch]
 
+    ggml_tensor * indexer_pos_slot = nullptr; // I32 [n_pos, n_stream]
+    ggml_tensor * indexer_pos_valid = nullptr; // F32 [n_pos, n_stream]
+    ggml_tensor * indexer_blocks = nullptr; // I32 [block_size, n_blocks, 1, n_stream]
+    ggml_tensor * indexer_extra = nullptr; // I32 [n_extra, n_tokens/n_stream, 1, n_stream]
+    ggml_tensor * indexer_remote_mask = nullptr; // F32 [n_blocks, n_tokens/n_stream, 1, n_stream]
+    // Static route signature: graph reuse is valid only while each query keeps its dense/sparse path.
+    std::vector<uint8_t> indexer_sparse_queries;
+
     const llama_kv_cache_msa_context * mctx_msa;
 };
 
@@ -1338,6 +1346,23 @@ struct llm_graph_context {
     // attention
     //
 
+    // Shared grouped Flash Attention path for block-sparse GQA models.
+    // q_cur: [D, HQ, T], k/v: [D, n_keys, 1, C], mask: [n_keys, R, 1, C].
+    ggml_tensor * build_attn_msa_fa(
+            ggml_tensor * q_cur,
+            ggml_tensor * k,
+            ggml_tensor * v,
+            ggml_tensor * mask,
+            int64_t Gp, float kq_scale, bool use_sparse, int il) const;
+
+    // Compatibility overload for existing dense MSA attention callers.
+    ggml_tensor * build_attn_msa_fa(
+            ggml_tensor * q_cur,
+            ggml_tensor * k,
+            ggml_tensor * v,
+            ggml_tensor * mask,
+            int64_t Gp, float kq_scale, int il) const;
+
     ggml_tensor * build_attn_mha(
             ggml_tensor * q,       // [n_embd_head_q, n_head_q, n_tokens]
             ggml_tensor * k,       // [n_embd_head_k, n_head_k, n_tokens]
@@ -1405,7 +1430,9 @@ struct llm_graph_context {
 
     llm_graph_input_attn_k_dsa_iswa * build_attn_inp_k_dsa_iswa() const;
 
-    llm_graph_input_attn_kv_msa * build_attn_inp_kv_msa(bool msa_enabled) const;
+    // block_routing: block-sparse routing in position space (maxwell-moe). It needs one KV stream per sequence and the
+    // position <-> cell maps, which are only created when requested: an input that no graph consumes gets no buffer
+    llm_graph_input_attn_kv_msa * build_attn_inp_kv_msa(bool msa_enabled, bool block_routing = false) const;
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_k_dsa * inp,

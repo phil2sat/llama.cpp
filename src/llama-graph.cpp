@@ -1,5 +1,7 @@
 #include "llama-graph.h"
 
+#include "ggml-backend.h"
+
 #include "llama-impl.h"
 #include "llama-model.h"
 #include "llama-moe-cache.h"
@@ -770,12 +772,38 @@ void llm_graph_input_attn_kv_msa::set_input(const llama_ubatch * ubatch) {
     if (self_k_idxs_idx) {
         mctx_msa->get_idx()->set_input_k_idxs(self_k_idxs_idx, ubatch);
     }
-}
 
+    bool has_sparse_queries = false;
+    for (uint32_t i = 0; !has_sparse_queries && i < ubatch->n_tokens; ++i) {
+        has_sparse_queries = ubatch->pos[i * ubatch->n_pos] >= (llama_pos) hparams.indexer_dense_context;
+    }
+
+    // Dense-only batches still write indexer keys for future sparse decoding, but do not
+    // need any of the position-to-block routing inputs.
+    if (has_sparse_queries) {
+        if (indexer_pos_slot) {
+            mctx_msa->set_input_pos_slot(indexer_pos_slot, ubatch, self_k_idxs_idx);
+        }
+        if (indexer_pos_valid) {
+            mctx_msa->set_input_pos_valid_mask(indexer_pos_valid, ubatch, self_k_idxs_idx);
+        }
+        if (indexer_blocks) {
+            mctx_msa->set_input_block_slots(indexer_blocks, ubatch, self_k_idxs, hparams.indexer_block_size);
+        }
+        if (indexer_extra) {
+            mctx_msa->set_input_prefix_local_slots(indexer_extra, ubatch, self_k_idxs,
+                    hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
+        }
+        if (indexer_remote_mask) {
+            mctx_msa->set_input_remote_block_mask(indexer_remote_mask, ubatch,
+                    hparams.indexer_block_size, hparams.indexer_prefix_blocks, hparams.indexer_local_blocks);
+        }
+    }
+}
 bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
     mctx_msa = static_cast<const llama_kv_cache_msa_context *>(params.mctx);
 
-    // the parent class operates on the base cache context
+    // The parent class operates on the base cache context.
     this->mctx = mctx_msa->get_base();
 
     bool res = true;
@@ -785,11 +813,47 @@ bool llm_graph_input_attn_kv_msa::can_reuse(const llm_graph_params & params) {
         res &= self_k_idxs_idx->ne[0] == params.ubatch.n_tokens;
     }
 
-    res &= can_reuse_attn_mask(self_attn_mask, this->mctx, params.ubatch, params.cparams);
+    if (indexer_pos_slot) {
+        const int64_t n_stream = params.ubatch.n_seqs_unq;
+        const int64_t n_tps = params.ubatch.n_tokens / n_stream;
+        const int64_t n_blocks = mctx_msa->get_n_pos() / hparams.indexer_block_size;
+        res &= indexer_pos_slot->ne[0] == mctx_msa->get_n_pos(&params.ubatch);
+        res &= indexer_pos_slot->ne[1] == n_stream;
+        res &= indexer_pos_valid->ne[0] == mctx_msa->get_n_pos();
+        res &= indexer_pos_valid->ne[1] == n_stream;
+        res &= indexer_blocks->ne[0] == hparams.indexer_block_size;
+        res &= indexer_blocks->ne[1] == n_blocks;
+        res &= indexer_blocks->ne[3] == n_stream;
+        res &= indexer_extra->ne[0] == (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)*hparams.indexer_block_size;
+        res &= indexer_extra->ne[1] == n_tps;
+        res &= indexer_extra->ne[3] == n_stream;
+        res &= indexer_remote_mask->ne[0] == n_blocks;
+        res &= indexer_remote_mask->ne[1] == n_tps;
+        res &= indexer_remote_mask->ne[3] == n_stream;
+    }
+
+    // The graph structure differs for dense and sparse queries. Rebuild it if any token
+    // crosses the configured dense-context boundary or changes its route within the batch.
+    if (!indexer_sparse_queries.empty()) {
+        if (indexer_sparse_queries.size() != params.ubatch.n_tokens) {
+            res = false;
+        } else {
+            for (uint32_t i = 0; i < params.ubatch.n_tokens; ++i) {
+                const bool is_sparse = params.ubatch.pos[i * params.ubatch.n_pos] >= (llama_pos) hparams.indexer_dense_context;
+                if (indexer_sparse_queries[i] != (uint8_t) is_sparse) {
+                    res = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    llama_cparams cparams_msa = params.cparams;
+    cparams_msa.kv_unified = false;
+    res &= can_reuse_attn_mask(self_attn_mask, this->mctx, params.ubatch, cparams_msa);
 
     return res;
 }
-
 void llm_graph_input_attn_k_dsa::set_input(const llama_ubatch * ubatch) {
     mctx->get_mla()->set_input_k_idxs(self_k_idxs_mla, ubatch);
 
@@ -3137,6 +3201,60 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
     return pos_bias;
 }
 
+ggml_tensor * llm_graph_context::build_attn_msa_fa(
+        ggml_tensor * q_cur,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * mask,
+        int64_t Gp, float kq_scale, int il) const {
+    return build_attn_msa_fa(q_cur, k, v, mask, Gp, kq_scale, false, il);
+}
+
+ggml_tensor * llm_graph_context::build_attn_msa_fa(
+        ggml_tensor * q_cur,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * mask,
+        int64_t Gp, float kq_scale, bool use_sparse, int il) const {
+    const int64_t D  = q_cur->ne[0];
+    const int64_t HQ = q_cur->ne[1];
+    const int64_t T  = q_cur->ne[2];
+    const int64_t C  = k->ne[3];
+    GGML_ASSERT(Gp > 0 && C > 0);
+    GGML_ASSERT(HQ*T % (Gp*C) == 0);
+    const int64_t R = HQ*T/(Gp*C);
+    GGML_ASSERT(mask->type == GGML_TYPE_F16);
+    GGML_ASSERT(mask->ne[0] == k->ne[1]);
+    GGML_ASSERT(mask->ne[1] == R && mask->ne[2] == 1 && mask->ne[3] == C);
+
+    // Fold GQA query groups onto Flash Attention's sequence dimension.
+    ggml_tensor * q = ggml_reshape_4d(ctx0, q_cur, D, Gp, C, R);
+    q = ggml_permute(ctx0, q, 0, 2, 3, 1);
+
+    ggml_tensor * o = ggml_flash_attn_ext(ctx0, q, k, v, mask, kq_scale,
+                                          hparams.f_max_alibi_bias, 0.0f);
+
+    // Dense queries use the full causal KV range. Sparse queries are bounded by
+    // the selected remote blocks plus the mandatory prefix and local blocks.
+    const int64_t n_sparse_kv = (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks
+            + hparams.indexer_top_k) * hparams.indexer_block_size;
+    const int64_t n_kv_max = use_sparse
+            ? std::min<int64_t>(k->ne[1], n_sparse_kv)
+            : std::min<int64_t>(k->ne[1],
+                    std::max<int64_t>(hparams.indexer_dense_context, n_sparse_kv));
+    GGML_ASSERT(n_kv_max > 0);
+    ggml_flash_attn_ext_set_n_kv_max(o, static_cast<int32_t>(n_kv_max));
+
+    ggml_prec_set_acc(o, GGML_PREC_F32);
+    cb(o, "msa_fattn", il);
+
+    o = ggml_permute(ctx0, o, 0, 1, 3, 2);
+    if (!ggml_is_contiguous(o)) {
+        o = ggml_cont(ctx0, o);
+    }
+    return ggml_reshape_2d(ctx0, o, D*HQ, T);
+}
+
 ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * q,
          ggml_tensor * k,
@@ -4045,10 +4163,14 @@ llm_graph_input_attn_k_dsa_iswa * llm_graph_context::build_attn_inp_k_dsa_iswa()
     return (llm_graph_input_attn_k_dsa_iswa *) res->add_input(std::move(inp));
 }
 
-llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled) const {
+llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_enabled, bool block_routing) const {
     const auto * mctx_cur = static_cast<const llama_kv_cache_msa_context *>(mctx);
 
-    auto inp = std::make_unique<llm_graph_input_attn_kv_msa>(hparams, cparams, mctx_cur);
+    llama_cparams cparams_msa = cparams;
+    if (block_routing) {
+        cparams_msa.kv_unified = false;
+    }
+    auto inp = std::make_unique<llm_graph_input_attn_kv_msa>(hparams, cparams_msa, mctx_cur);
 
     const auto * mctx_base = mctx_cur->get_base();
     const auto * mctx_idx  = mctx_cur->get_idx();
@@ -4059,7 +4181,7 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
         inp->self_k_idxs = mctx_base->build_input_k_idxs(ctx0, ubatch);
         inp->self_v_idxs = mctx_base->build_input_v_idxs(ctx0, ubatch);
 
-        inp->self_attn_mask.raw = build_attn_inp_kq_mask(ctx0, mctx_base, ubatch, cparams);
+        inp->self_attn_mask.raw = build_attn_inp_kq_mask(ctx0, mctx_base, ubatch, cparams_msa);
     }
 
     inp->self_k_rot = mctx_base->get_k_rot();
@@ -4067,6 +4189,43 @@ llm_graph_input_attn_kv_msa * llm_graph_context::build_attn_inp_kv_msa(bool msa_
 
     if (msa_enabled) {
         inp->self_k_idxs_idx = mctx_idx->build_input_k_idxs(ctx0, ubatch);
+    }
+
+    if (msa_enabled && block_routing) {
+        const int64_t n_pos = mctx_cur->get_n_pos(&ubatch);
+        const int64_t n_stream = ubatch.n_seqs_unq;
+        const int64_t n_tps = ubatch.n_tokens / n_stream;
+        const int64_t block_size = hparams.indexer_block_size;
+        const int64_t n_blocks = n_pos / block_size;
+        const int64_t n_extra = (hparams.indexer_prefix_blocks + hparams.indexer_local_blocks)*block_size;
+
+        inp->indexer_pos_slot = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_pos, n_stream);
+        ggml_set_input(inp->indexer_pos_slot);
+        ggml_set_name(inp->indexer_pos_slot, "indexer_pos_slot");
+
+        inp->indexer_pos_valid = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_pos, n_stream);
+        ggml_set_input(inp->indexer_pos_valid);
+        ggml_set_name(inp->indexer_pos_valid, "indexer_pos_valid");
+
+        inp->indexer_blocks = ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, block_size, n_blocks, 1, n_stream);
+        ggml_set_input(inp->indexer_blocks);
+        ggml_set_name(inp->indexer_blocks, "indexer_blocks");
+
+        inp->indexer_extra = ggml_new_tensor_4d(ctx0, GGML_TYPE_I32, n_extra, n_tps, 1, n_stream);
+        ggml_set_input(inp->indexer_extra);
+        ggml_set_name(inp->indexer_extra, "indexer_extra");
+
+        inp->indexer_remote_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_blocks, n_tps, 1, n_stream);
+        ggml_set_input(inp->indexer_remote_mask);
+        ggml_set_name(inp->indexer_remote_mask, "indexer_remote_mask");
+
+        if (hparams.indexer_dense_context > 0) {
+            inp->indexer_sparse_queries.resize(ubatch.n_tokens);
+            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+                inp->indexer_sparse_queries[i] =
+                        ubatch.pos[i * ubatch.n_pos] >= (llama_pos) hparams.indexer_dense_context;
+            }
+        }
     }
 
     return (llm_graph_input_attn_kv_msa *) res->add_input(std::move(inp));

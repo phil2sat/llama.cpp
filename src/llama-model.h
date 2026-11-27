@@ -1094,6 +1094,14 @@ struct llama_model {
 
     llama_memory_i * create_memory(const llama_memory_params & params, const llama_cparams & cparams) const;
 
+    // Graph-size estimates supplied by the model for graph structures not represented by tensors.
+    virtual uint64_t graph_nodes_extra(uint32_t n_ubatch, uint32_t n_seq_max, uint32_t n_ctx_seq) const {
+        GGML_UNUSED(n_ubatch);
+        GGML_UNUSED(n_seq_max);
+        GGML_UNUSED(n_ctx_seq);
+        return 0;
+    }
+
     // graph size budget: max graph nodes per model tensor
     virtual uint32_t graph_nodes_per_tensor() const { return 8; }
 

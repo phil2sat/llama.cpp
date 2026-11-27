@@ -26,6 +26,7 @@
 #include <cfloat>
 #include <cinttypes>
 #include <cstdarg>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -10872,13 +10873,13 @@ struct test_top_k_mask : public test_case {
 
         ggml_tensor * blocks = nullptr;
         if (n_blk > 0) {
-            blocks = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_blk, n_pick);
+            blocks = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_blk, n_pick, 1, ns);
             ggml_set_name(blocks, "blocks");
         }
 
         ggml_tensor * extra = nullptr;
         if (n_extra > 0) {
-            extra = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_extra, nb, nh, ns);
+            extra = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, n_extra, nb, 1, ns);
             ggml_set_name(extra, "extra");
         }
 
@@ -11005,6 +11006,104 @@ static std::string var_to_str(const std::array<int32_t, GGML_MAX_OP_PARAMS / siz
     return oss.str();
 }
 
+
+struct test_flash_attn_gqa_grouped : public test_case {
+    static constexpr int64_t D = 16;
+    static constexpr int64_t HQ = 8;
+    static constexpr int64_t HKV = 2;
+    static constexpr int64_t GROUP = HQ / HKV;
+    static constexpr int64_t NQ = 3;
+    static constexpr int64_t NK = 13;
+
+    std::string vars() override {
+        return VARS_TO_STR5(D, HQ, HKV, NQ, NK);
+    }
+
+    double max_err() override {
+        return 1e-3;
+    }
+
+    double max_err(ggml_backend_t backend) override {
+        GGML_UNUSED(backend);
+        return max_err();
+    }
+
+    int64_t grad_nmax() override {
+        return 0;
+    }
+
+    bool run_whole_graph() override {
+        return true;
+    }
+
+    // The graph returns grouped attention minus a per-query-head dense reference.
+    // Both the CPU reference and every tested backend must therefore produce zero.
+    double err(const float * a, const float * b, size_t n) override {
+        double result = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            result = std::max(result, static_cast<double>(std::max(std::fabs(a[i]), std::fabs(b[i]))));
+        }
+        return result;
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, D, HQ, NQ, 1);
+        ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, D, HKV, NK, 1);
+        ggml_tensor * v = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, D, HKV, NK, 1);
+        ggml_tensor * mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, NK, NQ, 1, HKV);
+
+        ggml_set_name(q, "q");
+        ggml_set_name(k, "k");
+        ggml_set_name(v, "v");
+        ggml_set_name(mask, "mask");
+
+        // Grouped path: [D, HQ, NQ] -> [D, NQ, GROUP, HKV].
+        ggml_tensor * q_grouped = ggml_reshape_4d(ctx, q, D, GROUP, HKV, NQ);
+        q_grouped = ggml_permute(ctx, q_grouped, 0, 2, 3, 1);
+
+        ggml_tensor * k_grouped = ggml_permute(ctx, k, 0, 3, 1, 2);
+        ggml_tensor * v_grouped = ggml_permute(ctx, v, 0, 3, 1, 2);
+
+        ggml_tensor * grouped = ggml_flash_attn_ext(ctx, q_grouped, k_grouped, v_grouped, mask,
+                1.0f / sqrtf(float(D)), 0.0f, 0.0f);
+        ggml_prec_set_acc(grouped, GGML_PREC_F32);
+        grouped = ggml_permute(ctx, grouped, 0, 1, 3, 2);
+        grouped = ggml_cont(ctx, grouped);
+        grouped = ggml_reshape_2d(ctx, grouped, D * HQ, NQ);
+
+        // Dense reference: compute each query head independently with its GQA-mapped KV head.
+        ggml_tensor * dense = nullptr;
+        for (int64_t head = 0; head < HQ; ++head) {
+            const int64_t kv_head = head / GROUP;
+
+            ggml_tensor * q_head = ggml_view_4d(ctx, q, D, 1, NQ, 1,
+                    q->nb[1], q->nb[2], q->nb[3], head * q->nb[1]);
+            q_head = ggml_permute(ctx, q_head, 0, 2, 1, 3);
+
+            ggml_tensor * k_head = ggml_view_4d(ctx, k, D, 1, NK, 1,
+                    k->nb[1], k->nb[2], k->nb[3], kv_head * k->nb[1]);
+            ggml_tensor * v_head = ggml_view_4d(ctx, v, D, 1, NK, 1,
+                    v->nb[1], v->nb[2], v->nb[3], kv_head * v->nb[1]);
+            k_head = ggml_permute(ctx, k_head, 0, 3, 1, 2);
+            v_head = ggml_permute(ctx, v_head, 0, 3, 1, 2);
+
+            ggml_tensor * mask_head = ggml_view_4d(ctx, mask, NK, NQ, 1, 1,
+                    mask->nb[1], mask->nb[2], mask->nb[3], kv_head * mask->nb[3]);
+
+            ggml_tensor * head_out = ggml_flash_attn_ext(ctx, q_head, k_head, v_head, mask_head,
+                    1.0f / sqrtf(float(D)), 0.0f, 0.0f);
+            ggml_prec_set_acc(head_out, GGML_PREC_F32);
+            dense = dense ? ggml_concat(ctx, dense, head_out, 1) : head_out;
+        }
+
+        dense = ggml_cont(ctx, dense);
+        dense = ggml_reshape_2d(ctx, dense, D * HQ, NQ);
+
+        ggml_tensor * diff = ggml_sub(ctx, grouped, dense);
+        ggml_set_name(diff, "gqa_grouped_flash_attn_diff");
+        return diff;
+    }
+};
 
 struct test_generic_op : public test_case {
     const ggml_op op;
@@ -11802,11 +11901,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_top_k_mask(type, 512, 0, 0, 32, 5, true, 9));
         // blocks picked per head, the mask broadcast over the heads
         test_cases.emplace_back(new test_top_k_mask(type, 512, 16, 32, 4, 0, true, 6, 4, 1));
-        test_cases.emplace_back(new test_top_k_mask(type, 1024, 8, 128, 16, 8, false, 3, 2, 2));
+        test_cases.emplace_back(new test_top_k_mask(type, 1024, 8, 128, 16, 8, false, 3, 2, 2)); // per-stream block maps with head-broadcast extras
         // one mask row for all rows and streams (QSA)
         test_cases.emplace_back(new test_top_k_mask(type, 1001, 4, 70, 16, 3, true, 7, 1, 1, false, true));
         test_cases.emplace_back(new test_top_k_mask(type, 512, 8, 16, 32, 7, true, 5, 1, 4, false, true));
     }
+
+    // GQA mask broadcasting and grouped Flash Attention reference equivalence.
+    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 1, true));
+    test_cases.emplace_back(new test_top_k_mask(GGML_TYPE_F16, 4096, 128, 32, 16, 256, true, 7, 4, 2, true));
+    test_cases.emplace_back(new test_flash_attn_gqa_grouped());
 
     // glu ops
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}) {

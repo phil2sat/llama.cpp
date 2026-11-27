@@ -82,5 +82,27 @@ int main() {
         success = false;
     }
 
+    const struct {
+        std::string text;
+        std::string regex;
+        std::vector<std::string> expected;
+    } maxwell_split_tests[] = {
+        { "first\nsecond", "\\n", { "first", "\n", "second" } },
+        { "A中文B", "[^\\p{L}\\p{N}]?[\\p{Han}]+", { "A", "中文", "B" } },
+        { "AภาษาไทยB", "[\\u0E00-\\u0E7F\\u0E80-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF]+", { "A", "ภาษาไทย", "B" } },
+        { "HelloWorld", "[^\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+", { "Hello", "World" } },
+    };
+    for (const auto & test : maxwell_split_tests) {
+        const auto pieces = unicode_regex_split(test.text, { test.regex }, false);
+        if (pieces != test.expected) {
+            fprintf(stderr, "unexpected Maxwell pre-tokenizer split for '%s':", test.text.c_str());
+            for (const auto & piece : pieces) {
+                fprintf(stderr, " [%s]", piece.c_str());
+            }
+            fprintf(stderr, "\n");
+            success = false;
+        }
+    }
+
     return success ? 0 : 1;
 }

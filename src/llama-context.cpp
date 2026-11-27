@@ -1211,7 +1211,7 @@ float * llama_context::get_embeddings_nextn_ith(int32_t i) {
             throw std::runtime_error("no nextn embeddings");
         }
 
-        const uint32_t n_embd = model.hparams.n_embd_out();
+        const uint32_t n_embd = model.hparams.n_embd_nextn();
 
         if (!cparams.embeddings_nextn_masked) {
             // unmasked: nextn rows are stored densely, indexed by raw token position.
@@ -1597,7 +1597,7 @@ bool llama_context::h_nextn_dev_alloc() {
     };
     ctx_h_nextn_dev.reset(ggml_init(params));
 
-    h_nextn_dev = ggml_new_tensor_2d(ctx_h_nextn_dev.get(), GGML_TYPE_F32, model.hparams.n_embd_out(), cparams.n_batch + cparams.n_seq_max);
+    h_nextn_dev = ggml_new_tensor_2d(ctx_h_nextn_dev.get(), GGML_TYPE_F32, model.hparams.n_embd_nextn(), cparams.n_batch + cparams.n_seq_max);
     ggml_set_name(h_nextn_dev, "h_nextn_dev");
 
     buf_h_nextn_dev.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_h_nextn_dev.get(), ggml_backend_dev_buffer_type(h_nextn_dev_dev)));
@@ -2058,7 +2058,7 @@ int llama_context::encode(const llama_batch_ext & batch_inp) {
         ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
         GGML_ASSERT(backend_h != nullptr);
 
-        const uint32_t n_embd = hparams.n_embd_out();
+        const uint32_t n_embd = hparams.n_embd_nextn();
         GGML_ASSERT(n_outputs*n_embd <= (int64_t) embd_nextn.size);
         ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_outputs*n_embd*sizeof(float));
     }
@@ -2507,7 +2507,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
                 GGML_ASSERT(backend_h != nullptr);
 
-                const uint32_t n_embd  = hparams.n_embd_out();
+                const uint32_t n_embd  = hparams.n_embd_nextn();
                 float * embd_nextn_out = embd_nextn.data + offset*n_embd;
 
                 GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_nextn.size);
@@ -2631,6 +2631,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     const auto n_vocab    = vocab.n_tokens();
     const auto n_embd     = hparams.n_embd;
     const auto n_embd_out = hparams.n_embd_out();
+    const auto n_embd_nextn = hparams.n_embd_nextn();
 
     bool has_logits     = !cparams.embeddings || graph_has_logits;
     bool has_embd       = cparams.embeddings;
@@ -2648,12 +2649,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     logits.size     = has_logits     ? n_vocab*n_outputs_max     : 0;
     embd.size       = has_embd       ? n_embd_out*n_outputs_max  : 0;
-    embd_nextn.size = has_embd_nextn ? n_embd_out*n_outputs_max  : 0;
+    embd_nextn.size = has_embd_nextn ? n_embd_nextn*n_outputs_max : 0;
 
     if (has_embd_nextn && !cparams.embeddings_nextn_masked) {
         // unmasked: nextn row exists for every token in the batch, not just
         // those flagged via batch.logits[i] -> size by token count instead.
-        embd_nextn.size = (size_t) n_embd_out * n_batch;
+        embd_nextn.size = (size_t) n_embd_nextn * n_batch;
     }
 
     for (bool enabled : cparams.embeddings_layer_inp) {
@@ -2823,6 +2824,7 @@ void llama_context::output_reorder() {
     const uint64_t n_vocab     = model.vocab.n_tokens();
     const uint64_t n_embd      = model.hparams.n_embd;
     const uint64_t n_embd_out  = model.hparams.n_embd_out();
+    const uint64_t n_embd_nextn = model.hparams.n_embd_nextn();
 
     for (size_t s = 0; s < output_swaps.size(); ++s) {
         const uint64_t i0 = output_swaps[s].i0;
@@ -2841,8 +2843,8 @@ void llama_context::output_reorder() {
         }
 
         if (embd_nextn.size > 0 && cparams.embeddings_nextn_masked) {
-            for (uint64_t k = 0; k < n_embd_out; k++) {
-                std::swap(embd_nextn.data[i0*n_embd_out + k], embd_nextn.data[i1*n_embd_out + k]);
+            for (uint64_t k = 0; k < n_embd_nextn; k++) {
+                std::swap(embd_nextn.data[i0*n_embd_nextn + k], embd_nextn.data[i1*n_embd_nextn + k]);
             }
         }
 
@@ -2883,8 +2885,8 @@ void llama_context::output_reorder() {
             const int32_t j = embd_batch_idxs[i];
             GGML_ASSERT(j >= 0 && (size_t) j < embd_batch_idxs.size());
             if (embd_nextn.has_data() && !cparams.embeddings_nextn_masked) {
-                for (size_t k = 0; k < n_embd_out; ++k) {
-                    std::swap(embd_nextn.data[i*n_embd_out + k], embd_nextn.data[j*n_embd_out + k]);
+                for (size_t k = 0; k < n_embd_nextn; ++k) {
+                    std::swap(embd_nextn.data[i*n_embd_nextn + k], embd_nextn.data[j*n_embd_nextn + k]);
                 }
             }
             for (auto & layer : embd_layer_inp) {
@@ -2915,6 +2917,10 @@ uint32_t llama_context::graph_max_nodes() const {
     if (cparams.moe_cache_size > 0) {
         res += 32u*model.hparams.n_layer_all;
     }
+
+    // Add model-specific graph structures that are not represented by the tensor count.
+    const uint64_t extra_nodes = model.graph_nodes_extra(cparams.n_ubatch, cparams.n_seq_max, cparams.n_ctx_seq);
+    res += (uint32_t) std::min<uint64_t>(extra_nodes, UINT32_MAX - res);
 
     // every sampler builds n_outputs_max_per_seq chains, see llm_graph_context::build_sampling
     for (const auto & [seq_id, sampler] : sampling.samplers) {
@@ -3050,6 +3056,108 @@ ggml_cgraph * llama_context::graph_reserve(
         GGML_ASSERT(!sizes);
         LLAMA_LOG_ERROR("%s: failed to allocate compute buffers\n", __func__);
         return nullptr;
+    }
+
+    // debug: list the largest tensor groups of the reserved graph, layer suffix stripped
+    if (!split_only && gf && getenv("LLAMA_GRAPH_RESERVE_TOP")) {
+        std::map<std::string, std::pair<size_t, int>> groups;
+        for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+            const ggml_tensor * t = ggml_graph_node(gf, i);
+            if (t->view_src) {
+                continue;
+            }
+            std::string name = strncmp(t->name, "node_", 5) == 0 ? "(unnamed)" : t->name;
+            const size_t pos = name.rfind('-');
+            if (pos != std::string::npos && pos + 1 < name.size() && isdigit((unsigned char) name[pos + 1])) {
+                name.resize(pos);
+            }
+            auto & g = groups[name + " [" + ggml_op_name(t->op) + "]"];
+            g.first += ggml_nbytes(t);
+            g.second++;
+        }
+        // node count per op
+        {
+            std::map<std::string, int> ops;
+            for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+                ops[ggml_op_name(ggml_graph_node(gf, i)->op)]++;
+            }
+            std::vector<std::pair<std::string, int>> sorted_ops(ops.begin(), ops.end());
+            std::sort(sorted_ops.begin(), sorted_ops.end(), [](const auto & a, const auto & b) { return a.second > b.second; });
+            std::string line;
+            for (size_t i = 0; i < std::min<size_t>(sorted_ops.size(), 24); ++i) {
+                line += sorted_ops[i].first + "=" + std::to_string(sorted_ops[i].second) + " ";
+            }
+            LLAMA_LOG_INFO("%s: %d nodes, ops: %s\n", __func__, ggml_graph_n_nodes(gf), line.c_str());
+        }
+
+        // liveness in graph order: a tensor lives from its node to its last consumer (views count for their source)
+        {
+            const int n_nodes = ggml_graph_n_nodes(gf);
+            std::unordered_map<const ggml_tensor *, int> last_use;
+            auto base = [](const ggml_tensor * t) { return t->view_src ? t->view_src : t; };
+            for (int i = 0; i < n_nodes; ++i) {
+                const ggml_tensor * t = ggml_graph_node(gf, i);
+                for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                    if (t->src[s]) {
+                        last_use[base(t->src[s])] = i;
+                    }
+                }
+                if (t->flags & GGML_TENSOR_FLAG_OUTPUT) {
+                    last_use[base(t)] = n_nodes;
+                }
+            }
+            std::vector<int64_t> delta(n_nodes + 2, 0);
+            for (int i = 0; i < n_nodes; ++i) {
+                const ggml_tensor * t = ggml_graph_node(gf, i);
+                if (t->view_src || t->op == GGML_OP_NONE) {
+                    continue;
+                }
+                auto it = last_use.find(t);
+                const int end = it == last_use.end() ? i : std::max(i, it->second);
+                delta[i]       += (int64_t) ggml_nbytes(t);
+                delta[end + 1] -= (int64_t) ggml_nbytes(t);
+            }
+            int64_t cur = 0, peak = 0;
+            int peak_i = 0;
+            for (int i = 0; i < n_nodes; ++i) {
+                cur += delta[i];
+                if (cur > peak) {
+                    peak = cur;
+                    peak_i = i;
+                }
+            }
+            const ggml_tensor * pn = ggml_graph_node(gf, peak_i);
+            LLAMA_LOG_INFO("%s: peak live = %.2f MiB at node %d / %d (%s, %s)\n", __func__,
+                    peak/1024.0/1024.0, peak_i, n_nodes, pn->name, ggml_op_name(pn->op));
+            std::vector<std::pair<int64_t, int>> live;
+            for (int i = 0; i <= peak_i; ++i) {
+                const ggml_tensor * t = ggml_graph_node(gf, i);
+                if (t->view_src || t->op == GGML_OP_NONE) {
+                    continue;
+                }
+                auto it = last_use.find(t);
+                const int end = it == last_use.end() ? i : std::max(i, it->second);
+                if (end >= peak_i) {
+                    live.push_back({(int64_t) ggml_nbytes(t), i});
+                }
+            }
+            std::sort(live.begin(), live.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+            for (size_t k = 0; k < std::min<size_t>(live.size(), 12); ++k) {
+                const ggml_tensor * t = ggml_graph_node(gf, live[k].second);
+                const int end = std::max(live[k].second, last_use.count(t) ? last_use[t] : live[k].second);
+                LLAMA_LOG_INFO("%s: live at peak: node %6d - %6d %-28s [%s] %9.2f MiB\n", __func__,
+                        live[k].second, end, t->name, ggml_op_name(t->op), live[k].first/1024.0/1024.0);
+            }
+            LLAMA_LOG_INFO("%s: live at peak: %zu tensors\n", __func__, live.size());
+        }
+
+        std::vector<std::pair<std::string, std::pair<size_t, int>>> sorted(groups.begin(), groups.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) { return a.second.first > b.second.first; });
+        for (size_t i = 0; i < std::min<size_t>(sorted.size(), 20); ++i) {
+            LLAMA_LOG_INFO("%s: top %2zu: %-48s total = %9.2f MiB, count = %5d, each = %8.2f MiB\n", __func__, i,
+                    sorted[i].first.c_str(), sorted[i].second.first/1024.0/1024.0, sorted[i].second.second,
+                    sorted[i].second.first/1024.0/1024.0/sorted[i].second.second);
+        }
     }
 
     return gf;

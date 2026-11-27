@@ -600,6 +600,7 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd       (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_inp   (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_embd_nextn (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer      (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head       (const struct llama_model * model);
@@ -1213,7 +1214,7 @@ extern "C" {
     LLAMA_API bool llama_supports_embd_row(const struct llama_context * ctx);
 
     // Write the unmasked h_nextn rows (see llama_set_embeddings_nextn) of each decode to a device buffer
-    // [n_embd_out, n_batch + n_seq_max] instead of host memory: row r < n_batch is the token at batch index r of the last decode,
+    // [n_embd_nextn, n_batch + n_seq_max] instead of host memory: row r < n_batch is the token at batch index r of the last decode,
     // row n_batch + s is free for the caller, e.g. for seq s (see llama_set_embeddings_nextn_rows()).
     // Returns false if the buffer cannot be used, the rows are then extracted to host memory.
     LLAMA_API bool llama_set_embeddings_nextn_dev(struct llama_context * ctx, bool value);
