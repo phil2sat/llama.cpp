@@ -391,8 +391,23 @@ class Inkling2DSparkModel(Inkling2Model):
         self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
 
     def index_tensors(self, remote_hf_model_id: str | None = None) -> dict[str, Callable[[], Tensor]]:
+        # The MTP checkpoint is stored in a standalone mtp.safetensors file,
+        # which is not listed in the target model's model.safetensors.index.json.
+        # Index the target model normally, then add the remote MTP tensors.
         if remote_hf_model_id is not None:
-            raise NotImplementedError("Inkling2 DSpark export needs a local checkpoint")
+            tensors = super().index_tensors(remote_hf_model_id=remote_hf_model_id)
+            mtp_url = f"{gguf.utility.SafetensorRemote.BASE_DOMAIN}/{remote_hf_model_id}/resolve/main/mtp.safetensors"
+            remote_tensors = gguf.utility.SafetensorRemote.get_list_tensors(mtp_url)
+            for name, remote_tensor in remote_tensors.items():
+                data_gen = lambda r=remote_tensor: LazyTorchTensor.from_remote_tensor(r)  # noqa: E731
+                titem = self.filter_tensors((name, data_gen))
+                if titem:
+                    tname, tgen = titem
+                    if tname in tensors:
+                        raise ValueError(f"Inkling2 DSpark: duplicate tensor {tname!r} in target and MTP checkpoints")
+                    tensors[tname] = tgen
+            return tensors
+
         # mtp.safetensors is not in the weight map, unembed and embed_norm come from the target
         tensors = self.index_local_tensors("mtp")
         tensors.update(self.index_local_tensors("model"))
